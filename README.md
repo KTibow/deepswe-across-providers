@@ -88,6 +88,17 @@ scripts/run_trials_shard.sh     same, fetching each rollout's patch first
 scripts/collect.py              trial results + verifier logs -> compact JSON
 scripts/aggregate.py            shards -> summary.md / results.json
 scripts/aggregate_trials.py     ours vs published, with a confusion matrix
+scripts/analyze_published.py    recompute the leaderboard from published rollouts
+```
+
+### Offline check
+
+`scripts/analyze_published.py` needs no runner at all — it recomputes the
+leaderboard from DeepSWE's own per-rollout table and reports what the v1 -> v1.1
+regrade did:
+
+```bash
+python3 scripts/analyze_published.py --release v1.1 --out report/published.md
 ```
 
 Everything is pinned: the benchmark by commit SHA (`deepswe_ref`), the harness
