@@ -26,6 +26,15 @@ from pier.models.agent.context import AgentContext
 STAGING_DIR = "/replay"
 APPLY_SCRIPT = r"""#!/bin/bash
 # Apply a recorded submission and commit it, the way a finishing agent would.
+#
+# The files a patch touches are reset to HEAD first. Task images are built by
+# checking the repo out at the base commit and then running build steps, and
+# those steps can leave tracked files modified in-tree — DeepSWE's own grader
+# does the same per-file reset before applying a patch ("image build steps may
+# have modified tracked files in-tree, so resets are per-file, never
+# repo-wide", tests/grader.py). Without it a hunk can fail against a file the
+# build touched, the commit ends up empty, and the rollout gets graded at base
+# state, which is indistinguishable from a model that did nothing.
 set -uo pipefail
 cd /app || { echo "[replay] no /app"; exit 90; }
 git config --global --add safe.directory /app || true
@@ -38,9 +47,35 @@ fi
 echo "[replay] patch: $(wc -c < "$PATCH") bytes, $(grep -c '^diff --git' "$PATCH") file(s)"
 echo "[replay] head: $(git rev-parse HEAD)"
 
+# Paths the patch touches, from the diff headers (b/ side, then a/ side).
+paths=$(sed -n 's|^diff --git a/.* b/||p' "$PATCH")
+if [ -z "$paths" ]; then
+  paths=$(sed -n 's|^+++ b/||p' "$PATCH")
+fi
+
+reset_paths() {
+  local dirty=0
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if git cat-file -e "HEAD:$path" 2>/dev/null; then
+      git checkout HEAD -- "$path" 2>/dev/null || true
+    else
+      rm -f "$path" 2>/dev/null || true
+    fi
+    dirty=1
+  done <<< "$paths"
+  return 0
+}
+
+modified=$(git status --porcelain -- $paths 2>/dev/null | wc -l)
+if [ "$modified" -gt 0 ]; then
+  echo "[replay] $modified of the patched file(s) differ from HEAD in the image; resetting"
+fi
+
 applied=""
 while IFS= read -r mode; do
   [ -n "$mode" ] || continue
+  reset_paths
   # shellcheck disable=SC2086
   if git apply $mode "$PATCH" 2>/replay/apply.err; then
     applied="$mode"
@@ -50,7 +85,6 @@ while IFS= read -r mode; do
 done <<'MODES'
 --whitespace=nowarn --binary
 --whitespace=nowarn --binary -3
---whitespace=nowarn --binary --reject
 MODES
 
 if [ -z "$applied" ]; then
