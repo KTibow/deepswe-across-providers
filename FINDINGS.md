@@ -102,6 +102,18 @@ A 10-task subset can move an apparent score by tens of points, which is why
 `aggregate_bench.py` compares against published results *restricted to the same
 tasks* rather than against the headline leaderboard number.
 
+The seed alone is worth ±8 points at 12 tasks:
+
+| seed | subset rate | vs full benchmark |
+| ---: | ---: | ---: |
+| 0 | 60.3% | +5.1 |
+| 1 | 55.7% | **+0.5** |
+| 4 | 46.7% | −8.5 |
+| 8 | 60.9% | +5.7 |
+
+`scripts/pick_subset.py` scans seeds and names the representative one — **seed 1
+at 12 tasks** is the closest to the full benchmark's 55.2%.
+
 ### The exclusion policy hides provider failures
 
 DeepSWE drops rollouts that hit provider errors, infrastructure timeouts or

@@ -86,12 +86,20 @@ Results land in the job summary and a `report` artifact (`summary.md`,
 
 ## What will bite you
 
-- **Small subsets are noisy.** Per-task pass rates across published rollouts run
-  from 2.5% (`obsidian-linter-auto-table-of-contents`) to 92%
-  (`true-myth-iterable-collection-combinators`). A 10-task subset can swing a
-  model's apparent score by tens of points, so keep `seed` fixed and compare
-  against the published reference *on the same tasks* — which is what
-  `aggregate_bench.py` does.
+- **Small subsets are noisy, and the seed matters.** Per-task pass rates across
+  published rollouts run from 2.5% (`obsidian-linter-auto-table-of-contents`) to
+  92% (`true-myth-iterable-collection-combinators`). At 12 tasks, the seed alone
+  moves the subset's difficulty by ±8 points — the same size as the provider
+  effect you're looking for. `scripts/pick_subset.py` scores candidate seeds
+  against the published data and names the representative one:
+
+  ```bash
+  python3 scripts/pick_subset.py --tasks-dir deep-swe/tasks --n-tasks 12
+  # most representative: --seed 1 (55.7%, +0.5 vs full)
+  ```
+
+  Then keep that seed fixed, and read the "points easier/harder than average"
+  line in the report.
 - **Grading version matters more than it looks.** DeepSWE v1 scored by exit
   code, v1.1 by test node id. Re-grading the *same* rollouts moved individual
   configs by up to 6 points and individual tasks by up to 67, while the pooled
@@ -123,6 +131,7 @@ scripts/aggregate.py            oracle/nop replay -> summary.md
 scripts/aggregate_trials.py     ours vs published, with a confusion matrix
 scripts/aggregate_bench.py      model score vs published, same tasks, with CIs
 scripts/analyze_published.py    recompute the leaderboard from published data
+scripts/pick_subset.py          find a subset seed as hard as the full benchmark
 ```
 
 Everything is pinned: the benchmark by commit SHA (`deepswe_ref`), the harness
