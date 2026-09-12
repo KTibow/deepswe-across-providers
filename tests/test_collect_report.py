@@ -157,6 +157,14 @@ def main() -> None:
         check("report: repeat rows", "| steps that repeat a recent step (looping) | 50.0% |" in summary
               and "| rollouts that repeated 5+ steps in a row | 0 of 2 (longest run 2) |" in summary)
         check("report: per-task marks", f"| `{solved_task}` | `P` |" in summary and f"| `{failed_task}` | `X` |" in summary)
+        # The only timed call is the last: 30 tokens in a 10 s wait. The first has
+        # nothing before it, and the one after the format error has no start time.
+        check("report: speed counts the whole wait", "**3 tokens/s** overall" in summary, summary[summary.find("Output speed") - 5:][:200])
+        per_call = recs[solved_task]["agent"]["inference"]["per_call"]
+        check("collect: per-call records in order", [c["output_tokens"] for c in per_call] == [50, 20, 80, 30]
+              and [c["wait_s"] for c in per_call] == [None, None, None, 10.0] and per_call[1]["format_error"] is True, per_call)
+        check("report: token split rows", "| input tokens not from cache |" in summary and "| output tokens that are reasoning* |" in summary)
+        check("report: rollout phases", "| 0–20% |" in summary and "| 80–100% |" in summary)
         if failures:
             print(summary)
 

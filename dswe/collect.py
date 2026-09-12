@@ -91,6 +91,10 @@ def call_metrics(response: Any) -> dict[str, Any]:
         "reasoning_tokens": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or usage.get("reasoning_tokens"),
         "empty": not content.strip() and not reasoning.strip() and not tool_calls,
         "c1_chars": len(C1.findall(content + reasoning + arguments)),
+        # For splitting output into reasoning and the rest when the provider
+        # doesn't report reasoning tokens (crof doesn't, unless streaming).
+        "reasoning_chars": len(reasoning),
+        "text_chars": len(content) + len(arguments),
     }
 
 
@@ -173,9 +177,11 @@ def agent_summary(agent_dir: Path) -> dict[str, Any]:
             if "replayed_step" in extra:
                 replayed += 1
             else:
-                calls.append(call_metrics(extra.get("response")))
+                wait = None
                 if last_ts is not None and extra.get("timestamp") and not after_format_error:
-                    latencies.append(round(extra["timestamp"] - last_ts, 2))
+                    wait = round(extra["timestamp"] - last_ts, 2)
+                    latencies.append(wait)
+                calls.append({**call_metrics(extra.get("response")), "wait_s": wait})
             after_format_error = False
         elif extra.get("interrupt_type") == "FormatError":
             calls.append({**call_metrics(extra.get("response")), "format_error": True})
@@ -214,6 +220,12 @@ def agent_summary(agent_dir: Path) -> dict[str, Any]:
             "reasoning_tokens": series("reasoning_tokens"),
             "prompt_tokens": series("prompt_tokens"),
             "cached_tokens": series("cached_tokens"),
+            # One entry per call, in order, for token use and speed over the rollout.
+            "per_call": [
+                {k: c.get(k) for k in ("wait_s", "prompt_tokens", "cached_tokens", "output_tokens", "reasoning_tokens",
+                                       "reasoning_chars", "text_chars", "format_error")}
+                for c in calls
+            ],
         },
     }
 

@@ -115,9 +115,29 @@ Compare the rate with the reference, and read the steps where a streak starts.
   63450, 107143 vs 107072). A provider that dropped reasoning from the history
   would come in thousands of tokens short.
 - **Prefix caching works** across calls with a shared prefix.
-- **Speed**, glm-5.3 at `reasoning_effort=max`, 2026-09-12: a long-reasoning step
-  (4.5k output tokens) took 152 s, ~7.7 s to first token, ~31 tokens/s; short
-  steps took 12–18 s at 63k–107k context.
+- **Speed**, glm-5.3 at `reasoning_effort=max`, 2026-09-12. A single probe: a
+  4.5k-token reply took 152 s, ~7.7 s to first token, ~31 tokens/s; short
+  steps took 12–18 s at 63k–107k context. A full rollout of
+  `ytt-jsonpath-query-api` (run 34715508369) waited on crof for 29.4 of its 31
+  agent minutes, twice the published Z.AI median of 16: typical wait 8.7 s,
+  90th percentile 29 s, longest 219 s. The slowest calls were the long
+  reasoning replies (12.3k tokens in 219 s, 7.0k in 166 s), so about 40–55
+  tokens/s once decoding. Speed matters for scores here because the agent
+  timeout is 90 minutes.
+- **It slows down as context grows.** Across that rollout's fifths, typical
+  prompt 23k → 105k tokens, typical wait 4.8 → 13.6 s, and output tokens per
+  second of waiting 52 → 32. Almost all input was cached by then (99%), so
+  this is serving long contexts, not re-reading them. Output length explains
+  nearly all of the wait (about 4 s plus 18 s per 1,000 output tokens fits 97%
+  of it); how much input wasn't cached made no measurable difference.
+- **Reasoning tokens aren't reported** on non-streamed calls (they are when
+  streaming). The report estimates them from the reasoning's share of each
+  reply's characters; on 12 published glm-5.3 trajectories, which report
+  both, that estimate was 61.9% against an exact 60.5%.
+- **Behaviour per call matched Z.AI** on that rollout: no retries, no format
+  errors, 26.1 vs 23.3 garbled characters per 100 calls, typical output 262
+  vs 282 tokens, 98.2% vs 97.8% of prompt tokens cached, no repeated steps. It
+  did take 92 steps where Z.AI's four rollouts took 60–89, and passed.
 - A glm-5.3 reply came back with UTF-8 mis-decoded as Latin-1 (an em dash as
   three characters starting with `â`). That is glm-5.3 at Z.AI too: in 30
   published glm-5.3 trajectories, 29 have it in the model's own output (388

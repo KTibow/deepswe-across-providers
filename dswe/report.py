@@ -158,7 +158,7 @@ def reference_stats(config: str | None, tasks: list[str]) -> tuple[dict[str, dic
 def reference_calls(ref_rows: list[dict[str, Any]]) -> dict[str, Any]:
     """The per-call numbers ATIF keeps, from the reference config's published trajectories."""
     out: dict[str, Any] = {"rollouts": 0, "calls": 0, "format_errors": 0, "c1_chars": 0,
-                           "output_tokens": [], "prompt_tokens": [], "cached_tokens": [], "repeats": []}
+                           "output_tokens": [], "prompt_tokens": [], "cached_tokens": [], "repeats": [], "rollout_calls": []}
     for row in ref_rows:
         if not row.get("has_trajectory"):
             continue
@@ -183,7 +183,80 @@ def reference_calls(ref_rows: list[dict[str, Any]]) -> dict[str, Any]:
             for key, source in (("output_tokens", "completion_tokens"), ("prompt_tokens", "prompt_tokens"), ("cached_tokens", "cached_tokens")):
                 if isinstance(metrics.get(source), (int, float)):
                     out[key].append(metrics[source])
+        out["rollout_calls"].append([
+            {
+                "prompt_tokens": (s.get("metrics") or {}).get("prompt_tokens"),
+                "cached_tokens": (s.get("metrics") or {}).get("cached_tokens") or 0,
+                "output_tokens": (s.get("metrics") or {}).get("completion_tokens"),
+                "reasoning_tokens": (((s.get("metrics") or {}).get("extra") or {}).get("completion_tokens_details") or {}).get("reasoning_tokens") or 0,
+            }
+            for s in atif.agent_steps(traj)
+        ])
     return out
+
+
+def reasoning_of(call: dict[str, Any]) -> float:
+    """Reasoning tokens in one call: reported if the provider gave them, else estimated.
+
+    The estimate splits output tokens by the reasoning's share of the reply's
+    characters. On published glm-5.3 trajectories, which report both, it lands
+    within 1-2 points of the exact share.
+    """
+    if call.get("reasoning_tokens"):
+        return call["reasoning_tokens"]
+    chars = (call.get("reasoning_chars") or 0) + (call.get("text_chars") or 0)
+    return (call.get("output_tokens") or 0) * (call.get("reasoning_chars") or 0) / chars if chars else 0.0
+
+
+def token_totals(calls: list[dict[str, Any]]) -> dict[str, float]:
+    fresh = sum((c.get("prompt_tokens") or 0) - (c.get("cached_tokens") or 0) for c in calls)
+    cached = sum(c.get("cached_tokens") or 0 for c in calls)
+    output = sum(c.get("output_tokens") or 0 for c in calls)
+    reasoning = sum(reasoning_of(c) for c in calls)
+    return {"fresh": fresh, "cached": cached, "reasoning": reasoning, "other": output - reasoning}
+
+
+def speed(calls: list[dict[str, Any]]) -> float | None:
+    """Output tokens per second of waiting, the wait before the first token included."""
+    timed = [c for c in calls if c.get("wait_s") and c.get("output_tokens") is not None]
+    wait = sum(c["wait_s"] for c in timed)
+    return sum(c["output_tokens"] for c in timed) / wait if wait else None
+
+
+def phase_lines(ours: list[list[dict]], theirs: list[list[dict]], parts: int = 5) -> list[str]:
+    """How token use and speed change over a rollout, each rollout cut into equal parts by step."""
+    def bucket(rollouts: list[list[dict]]) -> list[list[dict]]:
+        out: list[list[dict]] = [[] for _ in range(parts)]
+        for calls in rollouts:
+            for i, call in enumerate(calls):
+                out[min(parts - 1, parts * i // len(calls))].append(call)
+        return out
+
+    def summary(calls: list[dict]) -> dict[str, str]:
+        if not calls:
+            return {"input": "-", "fresh": "-", "output": "-", "reasoning": "-"}
+        prompt = sum(c.get("prompt_tokens") or 0 for c in calls)
+        output = sum(c.get("output_tokens") or 0 for c in calls)
+        totals = token_totals(calls)
+        return {
+            "input": fmt(med([c.get("prompt_tokens") for c in calls]), "k"),
+            "fresh": pct(totals["fresh"], prompt),
+            "output": fmt(med([c.get("output_tokens") for c in calls])),
+            "reasoning": pct(totals["reasoning"], output),
+        }
+
+    mine, published_parts = bucket(ours), bucket(theirs)
+    lines = ["Over the course of a rollout (each cut into fifths by step; this run / published run):", "",
+             "| steps | input per call, typical | input not from cache | output per call, typical | output that is reasoning | wait per call, typical | output tokens/s |",
+             "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    for k in range(parts):
+        a, b = summary(mine[k]), summary(published_parts[k])
+        waits = [c["wait_s"] for c in mine[k] if c.get("wait_s")]
+        tps = speed(mine[k])
+        lines.append(f"| {100 * k // parts}–{100 * (k + 1) // parts}% | {a['input']} / {b['input']} | {a['fresh']} / {b['fresh']} | "
+                     f"{a['output']} / {b['output']} | {a['reasoning']} / {b['reasoning']} | "
+                     f"{fmt(med(waits), 's', 1)} | {fmt(tps, digits=0)} |")
+    return lines + ["", "Wait and speed aren't published for the reference run.", ""]
 
 
 def repeat_share(stats: list[dict[str, Any]]) -> str:
@@ -266,6 +339,11 @@ def api_lines(records: list[dict], ref_rows: list[dict]) -> tuple[list[str], dic
     lines.append("- Why replies ended: " + ", ".join(
         f"{ended.get(k, f'`{k}`')} {v}" for k, v in finish.most_common()))
     lines.append(f"- Empty replies (no text, no reasoning, no command): **{ours['empty_replies']}**")
+    all_calls = [c for r in live_records for c in r["agent"]["inference"].get("per_call") or []]
+    long_replies = [c["output_tokens"] / c["wait_s"] for c in all_calls if c.get("wait_s") and (c.get("output_tokens") or 0) >= 1000]
+    if speed(all_calls) is not None:
+        lines.append(f"- Output speed, counting the wait before the first token: **{speed(all_calls):.0f} tokens/s** overall"
+                     + (f"; typically {med(long_replies):.0f} tokens/s on replies of 1,000+ tokens" if long_replies else ""))
     lines.append("")
 
     def per_call(side: dict[str, Any] | None) -> dict[str, str]:
@@ -304,11 +382,20 @@ def api_lines(records: list[dict], ref_rows: list[dict]) -> tuple[list[str], dic
                                       [(r.get("agent_duration_seconds") or 0) / 60 or None for r in ref_fresh], 0),
             "cost, USD at each provider's prices": ([(r.get("metrics") or {}).get("cost_usd") for r in fresh], [r.get("cost_usd") for r in ref_fresh], 2),
         }
+        ours_totals = [token_totals(r["agent"]["inference"].get("per_call") or []) for r in fresh]
+        ref_live_calls = (ref or {}).get("rollout_calls") or []
+        theirs_totals = [token_totals(calls) for calls in ref_live_calls]
+        for key, label in (("fresh", "input tokens not from cache"), ("cached", "input tokens from cache"),
+                           ("reasoning", "output tokens that are reasoning*"), ("other", "output tokens that aren't")):
+            rows[label] = ([t[key] for t in ours_totals], [t[key] for t in theirs_totals], 0)
         lines += ["| per rollout, median | this run | published run | this ÷ published |", "| --- | ---: | ---: | ---: |"]
         for key, (a_values, b_values, digits) in rows.items():
             a, b = med(a_values), med(b_values)
             lines.append(f"| {key} | {fmt(a, digits=digits)} | {fmt(b, digits=digits)} | {f'{a / b:.2f}' if a is not None and b else '-'} |")
-        lines += ["", "The published run had 90 minutes of agent time per rollout, the same limit as this run by default.", ""]
+        lines += ["", "The published run had 90 minutes of agent time per rollout, the same limit as this run by default. "
+                  "\\*Where a provider doesn't report reasoning tokens, they're estimated from how much of each reply's text "
+                  "is reasoning; on published glm-5.3 trajectories that estimate is within 1–2 points of the exact share.", ""]
+        lines += phase_lines([r["agent"]["inference"].get("per_call") or [] for r in fresh], ref_live_calls)
 
     summary = {k: v for k, v in ours.items() if not isinstance(v, list)}
     summary["reference"] = {k: v for k, v in (ref or {}).items() if not isinstance(v, list)}
