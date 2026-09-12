@@ -1,0 +1,6 @@
+jobs/
+out/
+report/
+deep-swe/
+*.pyc
+__pycache__/
