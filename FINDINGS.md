@@ -86,34 +86,66 @@ free (none was solved by everyone).
 
 ## 4. Things that will cost you a run if you don't know them
 
-### A task whose score is a coin flip
+### One f2p test grades some submissions nondeterministically
 
-`langchain-request-coalescing` replayed **10 times from the identical patch**,
-same workflow, same runner image:
+`langchain-request-coalescing`, replayed 10 times from an identical patch on an
+identical runner image:
 
-| outcome | attempts |
+| input replayed | reward 1 | reward 0 |
+| --- | ---: | ---: |
+| a published rollout's `model.patch` (claude-sonnet-5) | **2** | **8** |
+| the task's reference solution | **10** | 0 |
+
+The reference is stable, so the test is not simply broken — but the same
+submission scores 1 or 0 depending on thread scheduling, which makes that
+rollout's published verdict a sample rather than a measurement.
+
+The test that moves is benchmark-authored (it comes from the task's own
+`tests/test.patch`, not upstream langchain) and it is on the fail-to-pass
+whitelist:
+
+```python
+def test_batch_per_item_coalescing() -> None:
+    inner = _Blocking()
+    coalesced = inner.with_coalesce()
+    def do_batch() -> None:
+        results[0] = coalesced.batch(["hello", "hello", "world"])
+    t = threading.Thread(target=do_batch)
+    t.start()
+    inner.release()          # races the worker thread
+    t.join(timeout=10)
+    assert inner.call_count == 2
+```
+
+`call_count == 2` holds only if both `"hello"` items are in flight at once.
+Nine of the 14 threaded tests in the same file sleep before releasing the
+blocked runnable; five do not, and three of those five assert a coalescing
+invariant (`test_batch_per_item_coalescing`,
+`test_batch_as_completed_coalesced_yield_together`,
+`test_stream_late_joiner_gets_all_chunks`). So an implementation that submits
+batch items one at a time can still coalesce when scheduling cooperates, and
+the test scores it differently run to run.
+
+How much of the task's published data this touches: of 257 scored rollouts, 73
+are exactly one f2p test short. Sampling 40 of their published `ctrf.json`
+files:
+
+| failing test | rollouts |
 | --- | ---: |
-| f2p 50/50 → reward 1 | **2** |
-| f2p 49/50 → reward 0 | **8** |
+| `test_batch_per_item_coalescing` | 28/40 |
+| `test_callbacks_fire_for_joined_callers` | 9/40 |
+| `test_stats_after_operations` | 2/40 |
+| `test_coalesce_clear_cancels_sync_waiters` | 1/40 |
 
-The one test that moves is `test_coalesce.test_batch_per_item_coalescing`: it
-starts a thread, calls `inner.release()`, and asserts two identical batch items
-coalesced into one call (`assert 3 == 2` when they don't). Nothing about the
-submission changes between attempts — only thread scheduling does.
-
-DeepSWE published this rollout as a fail; our first replay of it passed, which
-is how we found it. So for this task the binary reward is roughly a 1-in-5 coin
-flip, and its published pass rate (a task solved in 40% of rollouts) mixes model
-skill with that coin.
-
-Related open reports: [deep-swe#45](https://github.com/datacurve-ai/deep-swe/issues/45)
+Related open report: [deep-swe#45](https://github.com/datacurve-ai/deep-swe/issues/45)
 (`prometheus-transactional-reload-status` carries 21 `TestQueryLog` entries in
 its pass-to-pass whitelist — an upstream-known flaky test unrelated to the
-task). Those entries are still present in the v1.1 config; the task passed
-82/82 in our sweep, so it didn't flake that run, but the exposure is there.
+task). Those entries are still in the v1.1 config; the task passed 82/82 in our
+sweep, so it did not flake that run.
 
-**For provider comparison this is the noise floor.** A gap of a few points
-between two runs on a small subset can be entirely this.
+**For provider comparison:** repeat a borderline task before reading anything
+into it. A single rollout's verdict on a task like this carries real variance
+that has nothing to do with which provider served the tokens.
 
 ### Registry rate limits, not task failures
 
