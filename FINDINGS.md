@@ -13,15 +13,20 @@ the held-out verifier:
 | --- | ---: | --- | --- |
 | [smoke, one task per language](https://github.com/KTibow/deepswe-across-providers/actions/runs/34709187966) | 5 | reward 1 each | **5/5** |
 | [seed 0 sample](https://github.com/KTibow/deepswe-across-providers/actions/runs/34709631628) | 12 | reward 1 each | **12/12** |
+| [empty control (`nop`)](https://github.com/KTibow/deepswe-across-providers/actions/runs/34710135561) | 12 | reward 0 each | **12/12** |
 
-Every fail-to-pass and pass-to-pass node passed in all of them — `44/44` f2p and
-`2738/2738` p2p on `adaptix-name-mapping-aliases`, and so on across Go, Python,
-TypeScript, JavaScript and Rust. Nothing about the benchmark depends on
-Datacurve's infrastructure.
+The two runs bracket the benchmark exactly. On the same 12 tasks, `oracle`
+passes every fail-to-pass and pass-to-pass node (`44/44` f2p and `2738/2738` p2p
+on `adaptix-name-mapping-aliases`, and so on across all five languages), while
+`nop` scores `0/44` f2p and `2738/2738` p2p — every fail-to-pass test fails at
+base, every pass-to-pass test passes at base, on every task. That is the
+differential the benchmark's whitelists were built from, reproduced on a
+GitHub runner.
 
 Cost of the environment itself: **median 108 s per task** end to end (image pull,
-apply, full test suite, grade), min 84 s, max 266 s. That is the floor a model
-run adds its own thinking time to.
+apply, full test suite, grade), min 84 s, max 266 s. With the image already
+pulled, container start is ~1 s and grading is 25–178 s depending on the suite.
+That is the floor a model run adds its own thinking time to.
 
 ## 2. Our verdicts match Datacurve's on their own rollouts
 
