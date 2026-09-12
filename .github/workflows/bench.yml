@@ -143,6 +143,7 @@ jobs:
           KEY_VAR: ${{ inputs.key_var }}
           ATTEMPTS: ${{ inputs.attempts }}
           TASK_TIMEOUT: ${{ inputs.task_timeout }}
+          STAGGER_MAX_SEC: "45"
           EXTRA_AGENT_ENV: ${{ inputs.agent_env }}
           EXTRA_AGENT_KWARGS: ${{ inputs.agent_kwargs }}
           PROVIDER_API_KEY: ${{ secrets.PROVIDER_API_KEY }}

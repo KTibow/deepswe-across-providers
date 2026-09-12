@@ -132,6 +132,7 @@ jobs:
           TRIALS: ${{ matrix.trials }}
           PLAN: trial-plan.json
           TASK_TIMEOUT: ${{ inputs.task_timeout }}
+          STAGGER_MAX_SEC: "45"
         run: bash scripts/run_trials_shard.sh
 
       - name: Collect results

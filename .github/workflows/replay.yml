@@ -132,6 +132,7 @@ jobs:
           AGENT: ${{ inputs.agent }}
           ATTEMPTS: ${{ inputs.attempts }}
           TASK_TIMEOUT: ${{ inputs.task_timeout }}
+          STAGGER_MAX_SEC: "45"
         run: bash scripts/run_shard.sh
 
       - name: Collect results

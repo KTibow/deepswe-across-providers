@@ -14,6 +14,12 @@ mkdir -p out jobs patches
 
 avail_gb() { df --output=avail -BG / | tail -1 | tr -dc '0-9'; }
 
+# Stagger against sibling shards: a whole matrix starting at once is what
+# trips the registry rate limit in the first place.
+if [ -n "${STAGGER_MAX_SEC:-}" ] && [ "${STAGGER_MAX_SEC}" -gt 0 ]; then
+  sleep $(( RANDOM % STAGGER_MAX_SEC ))
+fi
+
 TRIALS="${TRIALS}" PLAN="${PLAN}" python3 - > out/shard.tsv <<'PY'
 import json, os
 plan = json.load(open(os.environ["PLAN"]))
@@ -28,6 +34,8 @@ while IFS=$'\t' read -r trial task patch_url; do
   echo "::group::${trial}"
   echo "task=${task}"
   start=$(date +%s)
+
+  bash scripts/pull_image.sh "${TASKS_DIR}/${task}" || true
 
   patch="${PWD}/patches/${trial}.patch"
   http=$(curl -sSL -o "${patch}" -w '%{http_code}' "${patch_url}")

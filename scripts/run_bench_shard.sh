@@ -25,6 +25,12 @@ mkdir -p out jobs
 
 avail_gb() { df --output=avail -BG / | tail -1 | tr -dc '0-9'; }
 
+# Stagger against sibling shards: a whole matrix starting at once is what
+# trips the registry rate limit in the first place.
+if [ -n "${STAGGER_MAX_SEC:-}" ] && [ "${STAGGER_MAX_SEC}" -gt 0 ]; then
+  sleep $(( RANDOM % STAGGER_MAX_SEC ))
+fi
+
 args=(--agent mini-swe-agent --model "${MODEL}" --ae "${KEY_VAR}=\${PROVIDER_API_KEY}")
 if [ -n "${API_BASE}" ]; then
   args+=(--ae "OPENAI_BASE_URL=${API_BASE}" --ae "OPENAI_API_BASE=${API_BASE}")
@@ -36,6 +42,7 @@ echo "model=${MODEL} attempts=${ATTEMPTS} base=${API_BASE:-<provider default>} k
 
 for task in $TASKS; do
   echo "::group::${task}"
+  bash scripts/pull_image.sh "${TASKS_DIR}/${task}" || true
   start=$(date +%s)
   timeout --signal=KILL "${TASK_TIMEOUT}" \
     pier run \

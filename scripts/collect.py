@@ -157,7 +157,7 @@ def main() -> None:
             "apply_failed": bool(rewards.get("apply_failed")),
             "exception": {
                 "type": exc.get("exception_type") or exc.get("type"),
-                "message": str(exc.get("exception_message") or exc.get("message") or "")[:1000],
+                "message": str(exc.get("exception_message") or exc.get("message") or "")[:4000],
             }
             if exc
             else None,

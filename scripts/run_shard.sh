@@ -15,9 +15,16 @@ mkdir -p out jobs
 
 avail_gb() { df --output=avail -BG / | tail -1 | tr -dc '0-9'; }
 
+# Stagger against sibling shards: a whole matrix starting at once is what
+# trips the registry rate limit in the first place.
+if [ -n "${STAGGER_MAX_SEC:-}" ] && [ "${STAGGER_MAX_SEC}" -gt 0 ]; then
+  sleep $(( RANDOM % STAGGER_MAX_SEC ))
+fi
+
 for task in $TASKS; do
   echo "::group::${task}"
   echo "disk before: $(avail_gb)G free"
+  bash scripts/pull_image.sh "${TASKS_DIR}/${task}" || true
   start=$(date +%s)
   timeout --signal=KILL "${TASK_TIMEOUT}" \
     pier run \
