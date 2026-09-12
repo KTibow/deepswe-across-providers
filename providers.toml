@@ -1,0 +1,70 @@
+# Who serves the tokens, and how the agent talks to each model.
+#
+# Runs and probes name `provider:model`, e.g. `crof:glm-5.3`.
+#
+# Each model block copies the settings of DeepSWE's published config for that
+# model, read off the header of a published `agent/mini-swe-agent.txt`
+# ("Building agent config from specs: ..."). That way a run differs from the
+# published one only in who serves the tokens. `request` is sent as extra
+# fields in the chat-completions body (litellm `extra_body`), so litellm's
+# drop_params can't silently strip them for a model it doesn't know.
+
+[providers.crof]
+api_base = "https://crof.ai/v1"
+key_env = "CROF_API_KEY"
+# litellm's openai provider speaks plain chat completions to any base URL.
+litellm_prefix = "openai/"
+
+[providers.openrouter]
+api_base = "https://openrouter.ai/api/v1"
+key_env = "OPENROUTER_API_KEY"
+litellm_prefix = "openrouter/"
+
+# Published: mini-swe-agent 2.4.2, model zai/glm-5.3, model_class=litellm,
+# set_cache_control=default_end, extra_body={"reasoning_effort": "max",
+# "thinking": {"type": "enabled", "clear_thinking": false}}. 69.0% over 451.
+[models."glm-5.3"]
+reference_config = "mini_swe_agent_glm_5_3_max"
+mini_swe_agent_version = "2.4.2"
+model_class = "litellm"
+set_cache_control = "default_end"
+request = { reasoning_effort = "max", thinking = { type = "enabled", clear_thinking = false } }
+ids = { crof = "glm-5.3", openrouter = "z-ai/glm-5.3" }
+# Pin OpenRouter to Z.AI, the provider behind the published run.
+provider_request.openrouter = { provider = { only = ["z-ai"], allow_fallbacks = false } }
+
+# Published: mini-swe-agent 2.4.5, model_kwargs.reasoning_effort=max, default
+# model class. 68.5% over 451.
+[models."kimi-k3"]
+reference_config = "mini_swe_agent_kimi_k3_max"
+mini_swe_agent_version = "2.4.5"
+model_class = "litellm"
+request = { reasoning_effort = "max" }
+ids = { crof = "kimi-k3", openrouter = "moonshotai/kimi-k3" }
+provider_request.openrouter = { provider = { only = ["moonshotai"], allow_fallbacks = false } }
+
+# Published: mini-swe-agent 2.4.6, model deepseek/deepseek-v4-pro,
+# model_class=litellm, model_kwargs.thinking={"type": "enabled"},
+# extra_body={"reasoning_effort": "max"}. 62.8% over 452.
+# Which checkpoint: DeepSWE ran it 2026-08-12 20:32 to 08-13 02:24 UTC against
+# DeepSeek's API, hours after the V4 Pro GA ("0813") was listed on 08-12. The
+# undated deepseek-v4-pro id on OpenRouter is the April release, so the
+# matching id there is the dated one.
+[models."deepseek-v4-pro"]
+reference_config = "mini_swe_agent_deepseek_v4_pro_max"
+mini_swe_agent_version = "2.4.6"
+model_class = "litellm"
+request = { reasoning_effort = "max", thinking = { type = "enabled" } }
+ids = { crof = "deepseek-v4-pro-0813", openrouter = "deepseek/deepseek-v4-pro-0813" }
+provider_request.openrouter = { provider = { only = ["deepseek"], allow_fallbacks = false } }
+
+# Published: mini-swe-agent 2.4.5, model deepseek/deepseek-v4-flash, same
+# settings as V4 Pro. 53.3% over 452. Ran 2026-08-05 to 08-06, after the 0731
+# re-post-train shipped on 07-31; the undated OpenRouter id is again April's.
+[models."deepseek-v4-flash"]
+reference_config = "mini_swe_agent_deepseek_v4_flash_max"
+mini_swe_agent_version = "2.4.5"
+model_class = "litellm"
+request = { reasoning_effort = "max", thinking = { type = "enabled" } }
+ids = { crof = "deepseek-v4-flash-0731", openrouter = "deepseek/deepseek-v4-flash-0731" }
+provider_request.openrouter = { provider = { only = ["deepseek"], allow_fallbacks = false } }
