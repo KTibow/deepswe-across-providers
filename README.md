@@ -31,6 +31,19 @@ This is deliberately *not* a leaderboard run. A leaderboard entry
 (`--agent mini-swe-agent --model ...`) measures a model; the replay measures the
 benchmark.
 
+## The second reproduction: regrading published rollouts
+
+DeepSWE publishes the outcome of all 31,617 rollouts behind its leaderboard
+(`/artifacts/v1.1/trials.json`), and for 28,815 of them the actual submission
+the agent produced (`model.patch`, on the trial-artifact CDN). That makes a
+sharper check possible than the oracle run: take a rollout's recorded patch,
+replay it into the task environment here, grade it with the same verifier, and
+compare our verdict to the published one.
+
+Same inputs, same grader, different machine — so every disagreement is a
+reproduction difference and nothing else. No model is called, so a 10-rollout
+regrade costs nothing but runner minutes.
+
 ## Running it
 
 Actions → **DeepSWE replay** → *Run workflow*, or:
@@ -50,6 +63,12 @@ gh workflow run replay.yml -f tasks="katex-multicolumn-array-spans" -f attempts=
 
 # the negative control
 gh workflow run replay.yml -f agent=nop -f n_tasks=5
+
+# regrade 10 published rollouts, half of them published as passing
+gh workflow run regrade.yml -f n_trials=10 -f balance=true
+
+# regrade one model's rollouts on one task
+gh workflow run regrade.yml -f models="claude-opus-5" -f tasks="helm-*" -f n_trials=8
 ```
 
 Each run produces a job summary and a `report` artifact containing
@@ -59,11 +78,16 @@ verifier stdout) and `results.json`.
 ### Layout
 
 ```
-.github/workflows/replay.yml   plan -> sharded replay -> report
-scripts/plan.py                deterministic subset selection + sharding
-scripts/run_shard.sh           one pier job per task, disk reclaimed between
-scripts/collect.py             trial results + verifier logs -> compact JSON
-scripts/aggregate.py           shards -> summary.md / results.json
+.github/workflows/replay.yml    oracle/nop: plan -> sharded replay -> report
+.github/workflows/regrade.yml   published rollouts: select -> regrade -> compare
+scripts/plan.py                 deterministic subset selection + sharding
+scripts/select_trials.py        pick published rollouts that have a patch
+scripts/patch_agent.py          pier agent that replays a recorded submission
+scripts/run_shard.sh            one pier job per task, disk reclaimed between
+scripts/run_trials_shard.sh     same, fetching each rollout's patch first
+scripts/collect.py              trial results + verifier logs -> compact JSON
+scripts/aggregate.py            shards -> summary.md / results.json
+scripts/aggregate_trials.py     ours vs published, with a confusion matrix
 ```
 
 Everything is pinned: the benchmark by commit SHA (`deepswe_ref`), the harness

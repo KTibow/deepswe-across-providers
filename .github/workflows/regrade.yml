@@ -1,39 +1,47 @@
-name: DeepSWE replay
+name: DeepSWE regrade
 
-# Replays DeepSWE tasks inside GitHub-hosted runners using pier's non-model
-# agents: `oracle` (runs each task's reference solve.sh, then grades it with the
-# held-out verifier) and `nop` (submits nothing). Both have a known-correct
-# answer, so the run is a pure reproduction check of the benchmark's
-# environments and verifiers — no API keys, no model calls.
+# Replays rollouts DeepSWE already published. Each selected rollout's recorded
+# `model.patch` is applied in the task environment and graded by the benchmark's
+# own verifier, on a GitHub-hosted runner. Published reward vs. ours is the
+# measurement: agreement means the benchmark travels off Datacurve's
+# infrastructure, disagreement is a reproduction difference.
 
 on:
   workflow_dispatch:
     inputs:
-      tasks:
-        description: "Explicit task ids or globs (space/comma separated). Overrides sampling."
+      n_trials:
+        description: "How many rollouts to regrade"
+        type: string
+        default: "10"
+      models:
+        description: "Model globs (empty = any)"
         type: string
         default: ""
-      n_tasks:
-        description: "Sample this many tasks (0 = all 113)"
+      tasks:
+        description: "Task globs (empty = any)"
         type: string
-        default: "5"
+        default: ""
+      outcome:
+        description: "Restrict to rollouts published as..."
+        type: choice
+        options: ["any", "pass", "fail"]
+        default: "any"
+      balance:
+        description: "Half published-pass, half published-fail"
+        type: boolean
+        default: true
       seed:
-        description: "Sampling seed"
+        description: "Selection seed"
         type: string
         default: "0"
       shards:
         description: "Parallel runners"
         type: string
         default: "5"
-      attempts:
-        description: "Repeats per task (>1 measures flakiness)"
+      release:
+        description: "DeepSWE data release"
         type: string
-        default: "1"
-      agent:
-        description: "Replay agent"
-        type: choice
-        options: ["oracle", "nop"]
-        default: "oracle"
+        default: "v1.1"
       deepswe_ref:
         description: "datacurve-ai/deep-swe ref"
         type: string
@@ -43,7 +51,7 @@ on:
         type: string
         default: "0.3.1"
       task_timeout:
-        description: "Hard per-task timeout (seconds)"
+        description: "Hard per-rollout timeout (seconds)"
         type: string
         default: "3600"
 
@@ -54,39 +62,30 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-      n_selected: ${{ steps.plan.outputs.n_selected }}
-      mode: ${{ steps.plan.outputs.mode }}
-      deepswe_sha: ${{ steps.sha.outputs.sha }}
+      matrix: ${{ steps.select.outputs.matrix }}
+      n_selected: ${{ steps.select.outputs.n_selected }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check out the benchmark
-        uses: actions/checkout@v4
-        with:
-          repository: datacurve-ai/deep-swe
-          ref: ${{ inputs.deepswe_ref }}
-          path: deep-swe
-
-      - id: sha
-        run: echo "sha=$(git -C deep-swe rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - id: plan
+      - id: select
         run: |
-          python3 scripts/plan.py \
-            --tasks-dir deep-swe/tasks \
+          python3 scripts/select_trials.py \
+            --release "${{ inputs.release }}" \
+            --models "${{ inputs.models }}" \
             --tasks "${{ inputs.tasks }}" \
-            --n-tasks "${{ inputs.n_tasks }}" \
+            --outcome "${{ inputs.outcome }}" \
+            --n-trials "${{ inputs.n_trials }}" \
             --seed "${{ inputs.seed }}" \
             --shards "${{ inputs.shards }}" \
-            --out plan.json
+            ${{ inputs.balance && '--balance' || '' }} \
+            --out trial-plan.json
 
       - uses: actions/upload-artifact@v4
         with:
-          name: plan
-          path: plan.json
+          name: trial-plan
+          path: trial-plan.json
 
-  replay:
+  regrade:
     needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 330
@@ -100,7 +99,6 @@ jobs:
 
       - name: Free up disk
         run: |
-          df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /opt/hostedtoolcache/CodeQL /usr/local/share/powershell \
                       /usr/local/share/chromium /usr/local/lib/node_modules || true
@@ -114,6 +112,11 @@ jobs:
           ref: ${{ inputs.deepswe_ref }}
           path: deep-swe
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: trial-plan
+          path: .
+
       - name: Install pier
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -123,16 +126,13 @@ jobs:
         run: |
           uv tool install "datacurve-pier==${{ inputs.pier_version }}"
           pier --version
-          docker --version
-          docker compose version
 
-      - name: Replay shard ${{ matrix.shard }}
+      - name: Regrade shard ${{ matrix.shard }}
         env:
-          TASKS: ${{ matrix.tasks }}
-          AGENT: ${{ inputs.agent }}
-          ATTEMPTS: ${{ inputs.attempts }}
+          TRIALS: ${{ matrix.trials }}
+          PLAN: trial-plan.json
           TASK_TIMEOUT: ${{ inputs.task_timeout }}
-        run: bash scripts/run_shard.sh
+        run: bash scripts/run_trials_shard.sh
 
       - name: Collect results
         if: always()
@@ -143,12 +143,8 @@ jobs:
             --status out/status.jsonl \
             --shard "${{ matrix.shard }}" \
             --runner "${{ runner.name }}" \
-            --agent "${{ inputs.agent }}" \
+            --agent patch-replay \
             --out results
-
-      - name: Disk report
-        if: always()
-        run: df -h /
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -157,25 +153,19 @@ jobs:
           path: |
             results
             out/*.log
+            out/shard.tsv
           retention-days: 30
 
   report:
-    needs: [plan, replay]
+    needs: [plan, regrade]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check out the benchmark
-        uses: actions/checkout@v4
-        with:
-          repository: datacurve-ai/deep-swe
-          ref: ${{ inputs.deepswe_ref }}
-          path: deep-swe
-
       - uses: actions/download-artifact@v4
         with:
-          name: plan
+          name: trial-plan
           path: .
 
       - uses: actions/download-artifact@v4
@@ -188,27 +178,25 @@ jobs:
         run: |
           cat > meta.json <<EOF
           {
-            "agent": "${{ inputs.agent }}",
-            "selection": "${{ needs.plan.outputs.mode }}",
-            "tasks_requested": "${{ inputs.tasks }}",
+            "release": "${{ inputs.release }}",
             "n_selected": "${{ needs.plan.outputs.n_selected }}",
-            "attempts_per_task": "${{ inputs.attempts }}",
+            "models": "${{ inputs.models }}",
+            "tasks": "${{ inputs.tasks }}",
+            "outcome_filter": "${{ inputs.outcome }}",
+            "balanced": "${{ inputs.balance }}",
+            "seed": "${{ inputs.seed }}",
             "deepswe_ref": "${{ inputs.deepswe_ref }}",
-            "deepswe_sha": "${{ needs.plan.outputs.deepswe_sha }}",
             "pier_version": "${{ inputs.pier_version }}",
             "runner_image": "ubuntu-latest",
             "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           }
           EOF
-          cat meta.json
 
       - name: Aggregate
         run: |
-          python3 scripts/aggregate.py \
+          python3 scripts/aggregate_trials.py \
             --results-dir shards \
-            --plan plan.json \
-            --manifest deep-swe/tasks/manifest.json \
-            --agent "${{ inputs.agent }}" \
+            --plan trial-plan.json \
             --meta meta.json \
             --out report
           cat report/summary.md >> "$GITHUB_STEP_SUMMARY"

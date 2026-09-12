@@ -81,12 +81,21 @@ def main() -> None:
     records: list[dict[str, Any]] = []
     seen_tasks: set[str] = set()
 
-    for results_path in sorted(args.jobs_dir.rglob("results.json")):
+    # pier writes jobs/<job>/<trial>/result.json per trial and a job-level
+    # result.json next to it; the latter has no task_name and is skipped.
+    candidates = sorted(
+        set(args.jobs_dir.rglob("result.json")) | set(args.jobs_dir.rglob("results.json"))
+    )
+    for results_path in candidates:
         data = load_json(results_path)
         if not isinstance(data, dict) or "task_name" not in data:
             continue
         trial_dir = results_path.parent
         task = str(data["task_name"]).split("/")[-1]
+        # jobs/<job-name>/... — the job name is how we tie a trial replay
+        # back to the rollout it came from.
+        rel = results_path.relative_to(args.jobs_dir).parts
+        job = rel[0] if rel else ""
         seen_tasks.add(task)
 
         verifier_dir = trial_dir / "verifier"
@@ -115,6 +124,7 @@ def main() -> None:
 
         record = {
             "task": task,
+            "job": job,
             "trial": data.get("trial_name"),
             "shard": args.shard,
             "runner": args.runner,
@@ -142,15 +152,16 @@ def main() -> None:
         }
         records.append(record)
 
-        dest = logs_root / task / trial_dir.name
+        dest = logs_root / job / trial_dir.name
         dest.mkdir(parents=True, exist_ok=True)
         for name in KEEP_LOGS:
             src = verifier_dir / name
             if src.exists() and src.stat().st_size < 2_000_000:
                 shutil.copy2(src, dest / name)
-        oracle_log = trial_dir / "agent" / "oracle.txt"
-        if oracle_log.exists() and oracle_log.stat().st_size < 1_000_000:
-            shutil.copy2(oracle_log, dest / "oracle.txt")
+        for agent_log in ("oracle.txt", "replay.txt", "exit-code.txt"):
+            src = trial_dir / "agent" / agent_log
+            if src.exists() and src.stat().st_size < 1_000_000:
+                shutil.copy2(src, dest / agent_log)
         trial_log = trial_dir / "trial.log"
         if trial_log.exists():
             (dest / "trial.log").write_text(
@@ -164,6 +175,7 @@ def main() -> None:
         records.append(
             {
                 "task": task,
+                "job": task,
                 "trial": None,
                 "shard": args.shard,
                 "runner": args.runner,
