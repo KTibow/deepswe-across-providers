@@ -11,7 +11,7 @@ runner. This repo nails down the last two first, then measures the model.
 
 ## Establish the baseline before trusting a number
 
-Three checks, none of which call a model, each with a known-correct answer:
+Four checks, none of which call a model, each with a known-correct answer:
 
 | check | workflow | what it proves | correct result |
 | --- | --- | --- | --- |
