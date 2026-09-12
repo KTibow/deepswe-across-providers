@@ -149,8 +149,10 @@ tests/                      local checks: replay model through the real CLI, col
 ```
 
 Pinned: the benchmark by commit (`DEEPSWE_REF` in `run.yml`), pier by version,
-mini-swe-agent by the version each published config used. [NOTES.md](NOTES.md)
-has the practical details that cost time to find out.
+mini-swe-agent by the version each published config used. [FINDINGS.md](FINDINGS.md)
+has what the provider runs have shown, with each run's report kept in
+[`runs/`](runs); [NOTES.md](NOTES.md) has the practical details that cost time
+to find out; [`repros/`](repros) has minimal reproductions of provider bugs.
 
 ## Credits
 
