@@ -130,16 +130,33 @@ Compare the rate with the reference, and read the steps where a streak starts.
   this is serving long contexts, not re-reading them. Output length explains
   nearly all of the wait (about 4 s plus 18 s per 1,000 output tokens fits 97%
   of it); how much input wasn't cached made no measurable difference.
-- **Reasoning tokens depend on which response path crof uses.** Checked
-  2026-09-12 with glm-5.3: a request without tools comes back with a `gen-…`
-  id and reports `usage.reasoning_tokens` at the top level (not in the
-  standard `completion_tokens_details`); a request with a tool comes back as
-  `chatcmpl-…` and reports no reasoning count at all. Streamed with a tool it
-  reported one, but it was impossible: 4,911 reasoning of 4,563 output tokens.
-  mini-swe-agent always sends its bash tool, so in runs crof never reports
-  reasoning tokens. The report estimates them from the reasoning's share of
-  each reply's characters; on 12 published glm-5.3 trajectories, which report
-  both, that estimate was 61.9% against an exact 60.5%.
+- **Crof's reasoning token count is unreliable, and often missing.** Checked
+  2026-09-12 with glm-5.3 against the GLM-5.3 tokenizer (22 calls):
+  - `completion_tokens` is right: reasoning + content + tool arguments, plus
+    a few template tokens.
+  - `usage.reasoning_tokens` sits at the top level (not in
+    `completion_tokens_details`). It ran 0.77x–1.10x of the reasoning actually
+    returned, so it can exceed `completion_tokens` when the rest of the reply
+    is tiny (e.g. one short tool call): 4,911 vs 4,563, 1,002 vs 1,001. A
+    ~320-token prompt reproduces it, streamed or not, with or without tools;
+    see `repros/crof-reasoning-tokens.sh`.
+  - Whether it's there at all depends on the path. The presence of a `tools`
+    key (even `tools: []`) picks the path. Non-streamed with tools: no
+    reasoning count. Non-streamed without tools: `gen-…` ids and a count.
+    Streamed: `chatcmpl-…` ids and a count either way. Streams send usage once,
+    in the final chunk, and ignore `include_usage`.
+  - mini-swe-agent always sends its tool and doesn't stream, so runs never get
+    a count. The report estimates reasoning from the reasoning's share of each
+    reply's characters; on 12 published glm-5.3 trajectories, which report
+    both, that estimate was 61.9% against an exact 60.5%.
+- **Streams are bursty**: tokens arrive in bursts about 0.5 ms apart with
+  0.4–1.6 s gaps, so client-side time-to-first-token and speed from a stream
+  are skewed. No-tools streams include a `tokens_per_second` that is just
+  completion tokens over the client-visible window (1,404 tok/s for "pong").
+- **Mis-decoded UTF-8 on the tools path**: in 3 of 4 tool-path replies whose
+  `content` had non-ASCII characters, it came back mis-decoded (⌊ as three
+  Latin-1 characters). Never seen in `reasoning_content`, never on the
+  no-tools path.
 - **Behaviour per call matched Z.AI** on that rollout: no retries, no format
   errors, 26.1 vs 23.3 garbled characters per 100 calls, typical output 262
   vs 282 tokens, 98.2% vs 97.8% of prompt tokens cached, no repeated steps. It
