@@ -72,6 +72,19 @@ def main() -> None:
     retest = repeat_stats([("go test ./...", "run"), ("sed -i s/a/b/ x.go", "fix"), ("go test ./...", "again")])
     check("repeats: an identical rerun counts once", retest["repeated"] == 1 and retest["longest_streak"] == 1, retest)
 
+    from dswe.redact import redact
+    with tempfile.TemporaryDirectory() as tmp:
+        leaked = Path(tmp) / "logs" / "trajectory.json"
+        leaked.parent.mkdir()
+        leaked.write_text('{"output": "PATH=/usr/bin\\nOPENAI_API_KEY=sk-test-0123456789\\n"}')
+        untouched = Path(tmp) / "other.txt"
+        untouched.write_text("nothing secret here")
+        counts = redact([tmp], {"CROF_KEY": "sk-test-0123456789"})
+        text = leaked.read_text()
+        check("redact: key replaced in nested files", counts == {"CROF_KEY": 1} and "sk-test" not in text
+              and "OPENAI_API_KEY=<CROF_KEY redacted>" in text, (counts, text))
+        check("redact: other files unchanged", untouched.read_text() == "nothing secret here")
+
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         jobs = root / "jobs"

@@ -130,9 +130,14 @@ jobs:
 
       - name: Collect
         if: always()
+        env:
+          # Only so they can be scrubbed from the files uploaded below.
+          CROF_KEY: ${{ secrets.CROF_KEY }}
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
         run: |
           python3 -m dswe.collect --jobs-dir jobs --status out/status.jsonl \
             --shard "${{ matrix.shard }}" --runner "${{ runner.name }}" --out results
+          python3 -m dswe.redact results out
 
       - uses: actions/upload-artifact@v4
         if: always()
