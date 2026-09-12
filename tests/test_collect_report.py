@@ -118,6 +118,7 @@ def main() -> None:
 
         plan = {
             "agent": "crof:glm-5.3", "reference_config": "mini_swe_agent_glm_5_3_max", "selection": "test",
+            "profile": {"model": "glm-5.3", "provider": "crof"},
             "tasks": sorted([solved_task, failed_task, "never-ran"]),
             "units": [{"id": t, "task": t, "attempts": 1, "prefix": None} for t in (solved_task, failed_task, "never-ran")],
             "shards": [],
@@ -132,15 +133,16 @@ def main() -> None:
         check("report: exits 0", out.returncode == 0, out.stderr[-2000:])
         summary = (root / "report" / "summary.md").read_text() if out.returncode == 0 else ""
         results = json.loads((root / "report" / "results.json").read_text()) if out.returncode == 0 else {}
-        check("report: owners", results.get("owners") == {"solved": 1, "provider": 1, "infrastructure": 1}, results.get("owners"))
-        verdict = results.get("verdict") or {}
-        check("report: infrastructure excluded from score", verdict.get("scored") == 2 and verdict.get("solved") == 1, verdict)
+        check("report: outcomes", results.get("outcomes") == {"passed": 1, "api errors": 1, "setup broke": 1}, results.get("outcomes"))
+        verdict = results.get("result") or {}
+        check("report: broken setup left out of the score", verdict.get("counted") == 2 and verdict.get("passed") == 1, verdict)
         check("report: expectation from reference", 1.5 < (verdict.get("expected") or 0) < 2.0, verdict.get("expected"))
+        check("report: result sentence names the model", "the published glm-5.3 run.**" in summary, summary[:600])
         check("report: retries surfaced", "`ServiceUnavailableError` 9" in summary and "`RateLimitError` 1" in summary)
-        check("report: format errors surfaced", "| format-error replies | 1 of 5 (20.0%) |" in summary)
-        check("report: reference per-call column filled", "reference (8 published rollouts)" in summary)
-        check("report: repeat rows", "| steps repeating a recent step (numbers ignored) | 50.0% |" in summary
-              and "| rollouts with a repeat streak of 5+ steps | 0 of 2 (longest 2) |" in summary)
+        check("report: unusable replies surfaced", "| replies with no usable command | 1 of 5 (20.0%) |" in summary)
+        check("report: reference per-call column filled", "published run (8 rollouts)" in summary)
+        check("report: repeat rows", "| steps that repeat a recent step (looping) | 50.0% |" in summary
+              and "| rollouts that repeated 5+ steps in a row | 0 of 2 (longest run 2) |" in summary)
         check("report: per-task marks", f"| `{solved_task}` | `P` |" in summary and f"| `{failed_task}` | `X` |" in summary)
         if failures:
             print(summary)
@@ -163,9 +165,10 @@ def main() -> None:
                              cwd=REPO, capture_output=True, text=True)
         check("prefix report: exits 0", out.returncode == 0, out.stderr[-2000:])
         resumed = (root / "report2" / "summary.md").read_text() if out.returncode == 0 else ""
-        check("prefix report: recorded and our f2p side by side", f"| `{solved_task}` | pass 3/4 (cfg) | end | solved | 3/4 |" in resumed)
-        check("prefix report: fidelity counts graded full replays", "graded the same as the recorded rollout: **1/1**" in resumed)
-        check("prefix report: difference kinds shown", "(numbers 1)" in resumed)
+        check("prefix report: recorded and our tests side by side",
+              f"| `{solved_task}` | passed, 3 of 4 target tests (cfg) | end | passed | 3 of 4 |" in resumed)
+        check("prefix report: same-grade count covers finished replays", "got the same grade as the recording: **1 of 1**" in resumed)
+        check("prefix report: difference kinds shown", "(only numbers differ: 1)" in resumed)
         check("prefix report: ignored task input dropped from settings", "subset:ignored" not in resumed)
         if failures:
             print(resumed)

@@ -1,25 +1,27 @@
-"""Turn a run's collected records into the report a provider is judged by.
+"""Turn a run's collected records into the summary a provider is judged by.
 
     python3 -m dswe.report --plan plan.json --results-dir shards --meta meta.json --out report
 
 Writes ``summary.md`` (also the job summary) and ``results.json``. The summary
-answers, in order:
+is meant to be read by someone who didn't build this repo, so it says things
+plainly, in this order:
 
-1. **Verdict** — did the provider solve as many rollouts as the published
-   reference config would be expected to on these tasks?
-2. **Who owns each failure** — the model, the provider (a call that failed
-   after retries, or format errors), the clock (agent timeout), or our
-   harness (infrastructure, grading), which is excluded from the score.
-3. **Inference health** — per call, this run next to the reference config's
-   published trajectories on the same tasks: format errors, mis-decoded
-   UTF-8, output and prompt tokens, cache share; plus what only this run can
-   show (retries, finish reasons, empty replies, wait per call), and per
-   rollout steps, tokens, minutes and cost.
-4. **Per task**, then **resumed rollouts** and **replay fidelity** when the
-   run started from recorded trajectories, and **non-passing rollouts** with
-   where to find their logs.
+1. **Result** — did the provider pass as many rollouts as the published run of
+   the same model would be expected to on these tasks?
+2. **What happened to each rollout** — passed; finished but failed the tests;
+   gave up after API errors; gave up after unusable replies; ran out of time;
+   or our own setup / the grader broke, which isn't counted.
+3. **How the API behaved** — per model call, this run next to the published
+   run's trajectories on the same tasks (unusable replies, garbled
+   characters, tokens, cache, looping), plus what only this run records
+   (retries, why replies ended, empty replies, wait times), and per rollout
+   steps, tokens, minutes and cost.
+4. **Per task**, then **continuing recorded rollouts** and **did the replay
+   match the recording** when a run started from recordings, then **rollouts
+   that didn't pass** with where their logs are.
 
-oracle/nop runs get a short expectation check instead of a verdict.
+Reference-solution (oracle) and empty-submission (nop) runs get a one-line
+check instead of a result.
 """
 
 from __future__ import annotations
@@ -35,44 +37,54 @@ from typing import Any
 from dswe import atif, published
 from dswe.collect import C1, repeat_stats
 
-# A streak this long of steps repeating recent commands is called out as a loop.
+# A streak this long of steps repeating recent steps is called out as looping.
 LOOP_STREAK = 5
-
 PRIOR = 2.0
+
 INFRASTRUCTURE = {
     "NoTrialResult", "EnvironmentStartTimeoutError", "HealthcheckError", "AgentSetupTimeoutError",
     "AddTestsDirError", "DownloadVerifierDirError", "MissingExtraError",
 }
 GRADING = {"VerifierTimeoutError", "VerifierOutputParseError", "RewardFileEmptyError", "RewardFileNotFoundError"}
 AGENT_EXITS = {"Submitted", "LimitsExceeded", "TimeExceeded", "RepeatedFormatError"}
-OWNER_MARK = {
-    "solved": "P", "model": ".", "provider": "X", "format errors": "F",
-    "agent timeout": "T", "infrastructure": "I", "grading": "G", "unknown": "?",
+
+# outcome -> (mark in the per-task table, what it means, counted in the score?)
+OUTCOMES = {
+    "passed": ("P", "passed the task's tests", True),
+    "failed tests": (".", "finished, but failed the task's tests", True),
+    "api errors": ("X", "gave up: a model call still failed after 10 retries", True),
+    "unusable replies": ("F", "gave up: three replies in a row had no usable command", True),
+    "timed out": ("T", "ran out of agent time", True),
+    "unclear": ("?", "no agent log to tell what happened", True),
+    "setup broke": ("I", "our own setup broke before grading; not counted, rerun it", False),
+    "grader broke": ("G", "the grader broke; not counted, rerun it", False),
 }
-EXCLUDED = ("infrastructure", "grading")
+NOT_COUNTED = {k for k, (_, _, counted) in OUTCOMES.items() if not counted}
+TESTS_NOTE = ("*Target tests* are the ones the task adds, which fail before the change and must pass after "
+              "(DeepSWE's fail-to-pass); *existing tests* must keep passing (pass-to-pass).")
 
 
-def owner(record: dict[str, Any]) -> str:
-    """Who a rollout's outcome belongs to."""
+def outcome(record: dict[str, Any]) -> str:
+    """What happened to one rollout."""
     exc = (record.get("exception") or {}).get("type") or ""
     exit_status = (record.get("agent") or {}).get("exit_status") or ""
     if record["state"] == "resolved":
-        return "solved"
+        return "passed"
     if record["state"] == "harness-failure" or exc in INFRASTRUCTURE:
-        return "infrastructure"
+        return "setup broke"
     if exc in GRADING:
-        return "grading"
+        return "grader broke"
     if exc == "AgentTimeoutError":
-        return "agent timeout"
+        return "timed out"
     if exit_status == "RepeatedFormatError":
-        return "format errors"
+        return "unusable replies"
     if exit_status and exit_status not in AGENT_EXITS:
         # mini-swe-agent ends with the exception class once retries run out:
         # ServiceUnavailableError, RateLimitError, APIConnectionError, ...
-        return "provider"
+        return "api errors"
     if record["state"] == "unresolved":
-        return "model"
-    return "unknown"
+        return "failed tests"
+    return "unclear"
 
 
 def pct(num: float, den: float) -> str:
@@ -95,6 +107,27 @@ def fmt(value: float | None, unit: str = "", digits: int = 0) -> str:
     if unit == "k":
         return f"{value / 1000:.{max(digits, 1)}f}k"
     return f"{value:,.{digits}f}{unit}"
+
+
+def tests_text(rewards: dict[str, Any]) -> str:
+    if rewards.get("f2p_total") is None:
+        return ""
+    text = f"{rewards.get('f2p_passed')} of {rewards.get('f2p_total')} target tests"
+    if rewards.get("p2p_total") is not None:
+        text += f", {rewards.get('p2p_passed')} of {rewards.get('p2p_total')} existing tests"
+    return text
+
+
+def run_title(plan: dict[str, Any]) -> str:
+    agent = plan["agent"]
+    profile = plan.get("profile") or {}
+    if profile:
+        return f"{profile['model']} on {profile['provider']}"
+    return {
+        "oracle": "Reference solutions (oracle)",
+        "nop": "Empty submissions (nop)",
+        "replay": "Replaying recorded rollouts, no model",
+    }.get(agent, agent)
 
 
 def reference_stats(config: str | None, tasks: list[str]) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
@@ -162,47 +195,51 @@ def loop_count(stats: list[dict[str, Any]]) -> str:
     if not stats:
         return "-"
     loops = sum(1 for s in stats if s["longest_streak"] >= LOOP_STREAK)
-    return f"{loops} of {len(stats)} (longest {max(s['longest_streak'] for s in stats)})"
+    return f"{loops} of {len(stats)} (longest run {max(s['longest_streak'] for s in stats)})"
 
 
-def verdict_lines(records: list[dict], owners: list[str], expected: dict[str, dict], config: str | None) -> tuple[list[str], dict]:
-    scored = [(r, o) for r, o in zip(records, owners) if o not in EXCLUDED]
-    solved = sum(1 for _, o in scored if o == "solved")
-    lines = ["## Verdict", ""]
-    if not config or not scored:
-        lines += ["No reference config to compare against." if not config else "Nothing was scored.", ""]
-        return lines, {"scored": len(scored), "solved": solved}
-    exp = sum(expected[r["task"]]["expected"] for r, _ in scored)
-    sd = math.sqrt(sum(expected[r["task"]]["expected"] * (1 - expected[r["task"]]["expected"]) for r, _ in scored))
-    z = (solved - exp) / sd if sd else 0.0
-    tasks = {r["task"] for r, _ in scored}
+def result_lines(records: list[dict], outcomes: list[str], expected: dict[str, dict], config: str | None, model: str) -> tuple[list[str], dict]:
+    counted = [(r, o) for r, o in zip(records, outcomes) if o not in NOT_COUNTED]
+    passed = sum(1 for _, o in counted if o == "passed")
+    lines = ["## Result", ""]
+    if not config or not counted:
+        lines += ["There's no published run to compare against." if not config else "No rollout could be counted.", ""]
+        return lines, {"counted": len(counted), "passed": passed}
+    exp = sum(expected[r["task"]]["expected"] for r, _ in counted)
+    sd = math.sqrt(sum(expected[r["task"]]["expected"] * (1 - expected[r["task"]]["expected"]) for r, _ in counted))
+    z = (passed - exp) / sd if sd else 0.0
+    low, high = max(0.0, exp - 1.96 * sd), min(float(len(counted)), exp + 1.96 * sd)
+    tasks = {r["task"] for r, _ in counted}
     ref_pass = sum(expected[t]["passes"] for t in tasks)
     ref_total = sum(expected[t]["attempts"] for t in tasks)
+    where = f"Passed **{passed} of {len(counted)}**, where the published {model} run would pass about {exp:.1f} (normal range {low:.1f}–{high:.1f})."
     if z <= -2:
-        call = f"**Below the reference.** {solved} solved where {exp:.1f} ± {1.96 * sd:.1f} was expected (z = {z:.1f})."
+        head = f"**Worse than the published {model} run.** {where} That is {-z:.1f} standard deviations low, which is unlikely to be chance."
     elif z >= 2:
-        call = f"**Above the reference.** {solved} solved where {exp:.1f} ± {1.96 * sd:.1f} was expected (z = {z:.1f})."
+        head = f"**Better than the published {model} run.** {where} That is {z:.1f} standard deviations high."
     else:
-        call = f"**Consistent with the reference.** {solved} solved; {exp:.1f} ± {1.96 * sd:.1f} expected (z = {z:+.1f})."
-    clean = [o for _, o in scored if o in ("solved", "model")]
+        head = f"**In line with the published {model} run.** {where}"
+    finished = [o for _, o in counted if o in ("passed", "failed tests")]
+    left_out = len(records) - len(counted)
     lines += [
-        call, "",
-        f"- solved **{solved}/{len(scored)} = {pct(solved, len(scored))}** of scored rollouts (provider errors, format "
-        f"errors and timeouts count as failures; {len(records) - len(scored)} infrastructure/grading failure(s) left out)",
-        f"- `{config}` solved {ref_pass}/{ref_total} = {pct(ref_pass, ref_total)} of its published rollouts on these tasks; "
-        "the expectation pulls each task's rate toward every config's rate on it, since four rollouts can't justify 100%",
-        f"- rollouts that ended without provider trouble or timeout: {clean.count('solved')}/{len(clean)} = "
-        f"{pct(clean.count('solved'), len(clean))} solved",
+        head, "",
+        "- Rollouts that gave up (API errors, unusable replies) or ran out of time count as fails."
+        + (f" {left_out} rollout(s) where our own setup or the grader broke are left out; rerun those." if left_out else ""),
+        f"- The published run (`{config}`) passed {ref_pass} of {ref_total} attempts at these tasks. The expected count is a "
+        "little lower than its raw rate, because four attempts per task is a small sample: each task's rate is pulled "
+        "toward how every published model did on it.",
+        f"- Counting only rollouts that finished on their own: passed {finished.count('passed')} of {len(finished)}.",
         "",
     ]
-    return lines, {"scored": len(scored), "solved": solved, "expected": exp, "sd": sd, "z": z, "reference": [ref_pass, ref_total]}
+    return lines, {"counted": len(counted), "passed": passed, "expected": exp, "sd": sd, "z": z, "reference": [ref_pass, ref_total]}
 
 
-def inference_lines(records: list[dict], ref_rows: list[dict]) -> tuple[list[str], dict]:
-    inf = [i for i in ((r.get("agent") or {}).get("inference") for r in records) if i and i.get("calls")]
-    lines = ["## Inference health", ""]
+def api_lines(records: list[dict], ref_rows: list[dict]) -> tuple[list[str], dict]:
+    live_records = [r for r in records if (r.get("agent") or {}).get("inference", {}).get("calls")]
+    inf = [r["agent"]["inference"] for r in live_records]
+    lines = ["## How the API behaved", ""]
     if not inf:
-        return lines + ["No live model calls were recorded.", ""], {}
+        return lines + ["No model calls were recorded.", ""], {}
     retries: collections.Counter = collections.Counter()
     finish: collections.Counter = collections.Counter()
     for i in inf:
@@ -217,60 +254,61 @@ def inference_lines(records: list[dict], ref_rows: list[dict]) -> tuple[list[str
         "empty_replies": sum(i["empty_replies"] for i in inf),
         "retries": dict(retries),
         "finish_reasons": dict(finish),
-        "repeats": [(r.get("agent") or {}).get("repeats") for r in records
-                    if (r.get("agent") or {}).get("inference", {}).get("calls") and (r.get("agent") or {}).get("repeats")],
+        "repeats": [r["agent"]["repeats"] for r in live_records if r["agent"].get("repeats")],
         **pool,
     }
-    ref_tasks = {r["task"] for r in records if (r.get("agent") or {}).get("inference", {}).get("calls")}
-    ref = reference_calls([r for r in ref_rows if r["task_name"] in ref_tasks]) if ref_rows else None
+    tasks = {r["task"] for r in live_records}
+    ref = reference_calls([r for r in ref_rows if r["task_name"] in tasks]) if ref_rows else None
 
-    lines.append(f"- live model calls: **{ours['calls']}** over {ours['rollouts']} rollout(s); retried: "
+    ended = {"tool_calls": "asked to run a command", "stop": "stopped on its own", "length": "cut off by the output limit"}
+    lines.append(f"- Model calls: **{ours['calls']}** across {ours['rollouts']} rollout(s). Calls that errored and were retried: "
                  f"**{sum(retries.values())}**" + (" (" + ", ".join(f"`{k}` {v}" for k, v in retries.most_common()) + ")" if retries else ""))
-    lines.append("- finish reasons: " + ", ".join(f"`{k}` {v}" for k, v in finish.most_common()))
-    lines.append(f"- empty replies (no text, reasoning or tool call): **{ours['empty_replies']}**")
+    lines.append("- Why replies ended: " + ", ".join(
+        f"{ended.get(k, f'`{k}`')} {v}" for k, v in finish.most_common()))
+    lines.append(f"- Empty replies (no text, no reasoning, no command): **{ours['empty_replies']}**")
     lines.append("")
 
     def per_call(side: dict[str, Any] | None) -> dict[str, str]:
         if not side or not side["calls"]:
             return {}
-        cached_share = sum(side["cached_tokens"]) / sum(side["prompt_tokens"]) if sum(side["prompt_tokens"]) else None
+        cached = sum(side["cached_tokens"]) / sum(side["prompt_tokens"]) if sum(side["prompt_tokens"]) else None
         return {
-            "format-error replies": f"{side['format_errors']} of {side['calls']} ({pct(side['format_errors'], side['calls'])})",
-            "mis-decoded UTF-8 (C1 chars per 100 calls)": f"{100 * side['c1_chars'] / side['calls']:.1f}",
-            "output tokens, p50 / p90": f"{fmt(quantile(side['output_tokens'], 0.5))} / {fmt(quantile(side['output_tokens'], 0.9))}",
-            "prompt tokens, p50 / max": f"{fmt(quantile(side['prompt_tokens'], 0.5))} / {fmt(max(side['prompt_tokens']) if side['prompt_tokens'] else None)}",
-            "prompt served from cache": pct(cached_share, 1) if cached_share is not None else "-",
-            "steps repeating a recent step (numbers ignored)": repeat_share(side["repeats"]),
-            f"rollouts with a repeat streak of {LOOP_STREAK}+ steps": loop_count(side["repeats"]),
+            "replies with no usable command": f"{side['format_errors']} of {side['calls']} ({pct(side['format_errors'], side['calls'])})",
+            "garbled characters per 100 calls (UTF-8 read as Latin-1)": f"{100 * side['c1_chars'] / side['calls']:.1f}",
+            "output tokens, typical / 90th percentile": f"{fmt(quantile(side['output_tokens'], 0.5))} / {fmt(quantile(side['output_tokens'], 0.9))}",
+            "prompt tokens, typical / largest": f"{fmt(quantile(side['prompt_tokens'], 0.5))} / {fmt(max(side['prompt_tokens']) if side['prompt_tokens'] else None)}",
+            "prompt tokens served from cache": pct(cached, 1) if cached is not None else "-",
+            "steps that repeat a recent step (looping)": repeat_share(side["repeats"]),
+            f"rollouts that repeated {LOOP_STREAK}+ steps in a row": loop_count(side["repeats"]),
         }
 
     mine, theirs = per_call(ours), per_call(ref)
-    ref_label = f"reference ({ref['rollouts']} published rollouts)" if ref and ref["rollouts"] else "reference"
-    lines += [f"| per call | this run | {ref_label} |", "| --- | ---: | ---: |"]
-    for key, value in mine.items():
-        lines.append(f"| {key} | {value} | {theirs.get(key, '-')} |")
-    lines.append(f"| wait per call, p50 / p90 / max | {fmt(quantile(pool['latency_s'], 0.5), 's', 1)} / "
+    ref_label = f"published run ({ref['rollouts']} rollouts)" if ref and ref["rollouts"] else "published run"
+    lines += [f"| per model call | this run | {ref_label} |", "| --- | ---: | ---: |"]
+    lines += [f"| {key} | {value} | {theirs.get(key, '-')} |" for key, value in mine.items()]
+    lines.append(f"| wait for a reply, typical / 90th percentile / longest | {fmt(quantile(pool['latency_s'], 0.5), 's', 1)} / "
                  f"{fmt(quantile(pool['latency_s'], 0.9), 's', 1)} / {fmt(max(pool['latency_s']) if pool['latency_s'] else None, 's')} | not published |")
-    lines += ["", "glm-5.3 writes some mis-decoded UTF-8 even at Z.AI, so compare the rate, not the count. "
-              "A repeat streak can also be an agent polling a background job (`sleep 30; cat log`); "
-              "the non-passing list below names where each streak starts, which is the step to probe.", ""]
+    lines += ["",
+              "Compare rates, not counts: glm-5.3 writes some garbled characters even at Z.AI. A run of repeated steps "
+              "can also be an agent waiting on a background job (`sleep 30; cat log`); the list of rollouts that didn't "
+              "pass says where each run of repeats starts, which is the step to look at.", ""]
 
-    live = [r for r in records if (r.get("agent") or {}).get("inference", {}).get("calls") and not (r.get("agent") or {}).get("replayed_steps")]
-    if live and ref_rows:
-        ref_live = [r for r in ref_rows if r["task_name"] in {r["task"] for r in live}]
+    fresh = [r for r in live_records if not r["agent"].get("replayed_steps")]
+    if fresh and ref_rows:
+        ref_fresh = [r for r in ref_rows if r["task_name"] in {r["task"] for r in fresh}]
         rows = {
-            "agent steps": ([r["agent"].get("steps") for r in live], [r.get("n_agent_steps") for r in ref_live], 0),
-            "output tokens": ([sum(r["agent"]["inference"]["output_tokens"]) or None for r in live], [r.get("n_output_tokens") for r in ref_live], 0),
-            "peak prompt tokens": ([max(r["agent"]["inference"]["prompt_tokens"] or [0]) or None for r in live], [r.get("peak_context_tokens") for r in ref_live], 0),
-            "agent minutes": ([((r.get("timings") or {}).get("agent_execution") or 0) / 60 or None for r in live],
-                              [(r.get("agent_duration_seconds") or 0) / 60 or None for r in ref_live], 0),
-            "cost (USD, each provider's prices)": ([(r.get("metrics") or {}).get("cost_usd") for r in live], [r.get("cost_usd") for r in ref_live], 2),
+            "steps": ([r["agent"].get("steps") for r in fresh], [r.get("n_agent_steps") for r in ref_fresh], 0),
+            "output tokens": ([sum(r["agent"]["inference"]["output_tokens"]) or None for r in fresh], [r.get("n_output_tokens") for r in ref_fresh], 0),
+            "largest prompt, tokens": ([max(r["agent"]["inference"]["prompt_tokens"] or [0]) or None for r in fresh], [r.get("peak_context_tokens") for r in ref_fresh], 0),
+            "minutes of agent time": ([((r.get("timings") or {}).get("agent_execution") or 0) / 60 or None for r in fresh],
+                                      [(r.get("agent_duration_seconds") or 0) / 60 or None for r in ref_fresh], 0),
+            "cost, USD at each provider's prices": ([(r.get("metrics") or {}).get("cost_usd") for r in fresh], [r.get("cost_usd") for r in ref_fresh], 2),
         }
-        lines += ["| median per rollout | this run | reference | ratio |", "| --- | ---: | ---: | ---: |"]
+        lines += ["| per rollout, median | this run | published run | this ÷ published |", "| --- | ---: | ---: | ---: |"]
         for key, (a_values, b_values, digits) in rows.items():
             a, b = med(a_values), med(b_values)
             lines.append(f"| {key} | {fmt(a, digits=digits)} | {fmt(b, digits=digits)} | {f'{a / b:.2f}' if a is not None and b else '-'} |")
-        lines += ["", "The reference ran with a 5400 s agent timeout.", ""]
+        lines += ["", "The published run had 90 minutes of agent time per rollout, the same limit as this run by default.", ""]
 
     summary = {k: v for k, v in ours.items() if not isinstance(v, list)}
     summary["reference"] = {k: v for k, v in (ref or {}).items() if not isinstance(v, list)}
@@ -295,163 +333,163 @@ def main() -> None:
     for r in records:
         r["task"] = r.get("task") or units.get(r["unit"], {}).get("task")
     records.sort(key=lambda r: (r["unit"], str(r.get("trial"))))
-    owners = [owner(r) for r in records]
+    outcomes = [outcome(r) for r in records]
     agent = plan["agent"]
     config = plan.get("reference_config")
+    model = (plan.get("profile") or {}).get("model", "")
     expected, ref_rows = reference_stats(config, plan["tasks"])
 
-    lines = [f"# `{agent}` — {plan['selection']}", ""]
-    if plan["selection"] == "prefix(explicit)":
+    lines = [f"# {run_title(plan)}: {plan['selection']}", ""]
+    if plan.get("tasks_from") == "rollouts" or plan["selection"] == "prefix(explicit)":
         # Named rollouts decide the tasks; the workflow's task input was ignored.
         meta.pop("tasks", None)
     if meta:
         lines += ["| setting | value |", "| --- | --- |"] + [f"| {k} | `{v}` |" for k, v in meta.items() if v not in ("", None)] + [""]
     missing = sorted(set(units) - {r["unit"] for r in records})
     if missing:
-        lines += [f"**{len(missing)} planned unit(s) never reported:** " + ", ".join(f"`{u}`" for u in missing), ""]
+        lines += [f"**{len(missing)} planned rollout(s) produced no result at all:** " + ", ".join(f"`{u}`" for u in missing), ""]
 
     results: dict[str, Any] = {"meta": meta, "agent": agent, "selection": plan["selection"], "reference_config": config}
     has_prefix = any(u["prefix"] for u in units.values())
 
     if agent in ("oracle", "nop"):
-        want = 0 if agent == "nop" else 1
-        matched = [r for r in records if r.get("reward") is not None and float(r["reward"]) == want]
-        lines += ["## Expectation", "", f"`{agent}` must score reward {want} on every task: **{len(matched)}/{len(records)}** did.", ""]
+        matched = [r for r in records if r.get("reward") is not None and float(r["reward"]) == (0 if agent == "nop" else 1)]
+        should = "fail every task" if agent == "nop" else "pass every task"
+        lines += ["## Result", "", f"These should {should}: **{len(matched)} of {len(records)}** did.", ""]
         results["matched"] = [len(matched), len(records)]
     elif not has_prefix:
-        vl, results["verdict"] = verdict_lines(records, owners, expected, config)
-        lines += vl
+        rl, results["result"] = result_lines(records, outcomes, expected, config, model)
+        lines += rl
 
-    counts = collections.Counter(owners)
-    meaning = {
-        "solved": "graded reward 1",
-        "model": "submitted (or stopped) and failed the held-out tests",
-        "provider": "a model call still failed after mini-swe-agent's 10 retries",
-        "format errors": "three unusable replies in a row",
-        "agent timeout": "ran out of agent time",
-        "infrastructure": "our harness failed before grading — rerun, don't score",
-        "grading": "the verifier failed — rerun, don't score",
-        "unknown": "no agent trajectory to tell",
-    }
-    lines += ["## Outcomes by owner", "", "| owner | rollouts | meaning |", "| --- | ---: | --- |"]
-    lines += [f"| {key} | {counts[key]} | {meaning[key]} |" for key in OWNER_MARK if counts[key]]
+    counts = collections.Counter(outcomes)
+    lines += ["## What happened to each rollout", "", "| outcome | rollouts | meaning |", "| --- | ---: | --- |"]
+    lines += [f"| {key} | {counts[key]} | {meaning} |" for key, (_, meaning, _) in OUTCOMES.items() if counts[key]]
     lines.append("")
-    results["owners"] = dict(counts)
+    results["outcomes"] = dict(counts)
 
     if agent not in ("oracle", "nop", "replay"):
-        il, results["inference"] = inference_lines(records, ref_rows)
-        lines += il
+        al, results["api"] = api_lines(records, ref_rows)
+        lines += al
 
     lines += ["## Per task", ""]
     if expected:
-        lines += ["| task | ours | reference | expected | steps ours/ref | out tok ours/ref | agent min ours/ref |",
+        lines += ["| task | this run | published run passed | expected pass rate | steps, this / published | "
+                  "output tokens, this / published | minutes, this / published |",
                   "| --- | --- | ---: | ---: | ---: | ---: | ---: |"]
     else:
-        lines += ["| task | ours | steps | agent min |", "| --- | --- | ---: | ---: |"]
+        lines += ["| task | this run | steps | minutes |", "| --- | --- | ---: | ---: |"]
     by_task: dict[str, list[tuple[dict, str]]] = collections.defaultdict(list)
-    for r, o in zip(records, owners):
+    for r, o in zip(records, outcomes):
         by_task[r["task"]].append((r, o))
     for task in plan["tasks"]:
         rs = by_task.get(task, [])
-        marks = "".join(OWNER_MARK[o] for _, o in rs) or "-"
+        marks = "".join(OUTCOMES[o][0] for _, o in rs) or "-"
         steps = med([(r.get("agent") or {}).get("steps") for r, _ in rs])
         minutes = med([((r.get("timings") or {}).get("agent_execution") or 0) / 60 or None for r, _ in rs])
         out_tok = med([sum(((r.get("agent") or {}).get("inference") or {}).get("output_tokens") or []) or None for r, _ in rs])
         if expected:
             e = expected[task]
-            lines.append(f"| `{task}` | `{marks}` | {e['passes']}/{e['attempts']} | {e['expected']:.2f} | "
-                         f"{fmt(steps)}/{fmt(e['steps'])} | {fmt(out_tok, 'k')}/{fmt(e['output_tokens'], 'k')} | "
-                         f"{fmt(minutes)}/{fmt(e['minutes'])} |")
+            lines.append(f"| `{task}` | `{marks}` | {e['passes']} of {e['attempts']} | {e['expected']:.2f} | "
+                         f"{fmt(steps)} / {fmt(e['steps'])} | {fmt(out_tok, 'k')} / {fmt(e['output_tokens'], 'k')} | "
+                         f"{fmt(minutes)} / {fmt(e['minutes'])} |")
         else:
             lines.append(f"| `{task}` | `{marks}` | {fmt(steps)} | {fmt(minutes)} |")
-    lines += ["", "One mark per rollout: " + ", ".join(f"`{m}` {k}" for k, m in OWNER_MARK.items()) + ".", ""]
+    lines += ["", "One mark per rollout: " + ", ".join(f"`{mark}` {key}" for key, (mark, _, _) in OUTCOMES.items()) + ".", ""]
 
     if has_prefix:
-        lines += ["## Resumed rollouts", "",
-                  "| unit | recorded result | resumed at | ours | f2p ours | live steps | exit |",
+        lines += ["## Continuing recorded rollouts", "",
+                  "Each of these replayed a recorded rollout's first steps, running its commands for real, "
+                  "then let the model take over (or replayed it to the end with no model).", "",
+                  "| rollout | the recording | continued from step | this run | tests this run | new steps | how the agent stopped |",
                   "| --- | --- | ---: | --- | ---: | ---: | --- |"]
         buckets: dict[str, list[str]] = collections.defaultdict(list)
-        fidelity = []
-        for r, o in zip(records, owners):
+        same_grade = []
+        for r, o in zip(records, outcomes):
             prefix = units.get(r["unit"], {}).get("prefix") or {}
             if not prefix:
                 continue
             steps, total = prefix["steps"], prefix["total_steps"]
-            bucket = "full replay" if steps == -1 else f"{round(100 * steps / total) if total else 0}%"
+            bucket = "replayed to the end" if steps == -1 else f"{round(100 * steps / total) if total else 0}% through"
             buckets[bucket].append(o)
             rec = prefix.get("recorded_reward")
-            rec_text = "?" if rec is None else ("pass" if float(rec) >= 1 else "fail")
             rec_f2p = prefix.get("recorded_f2p") or [None, None]
+            recording = "?" if rec is None else ("passed" if float(rec) >= 1 else "failed")
             if rec_f2p[1] is not None:
-                rec_text += f" {rec_f2p[0]}/{rec_f2p[1]}"
-            rw = r.get("rewards") or {}
-            ours_f2p = f"{rw.get('f2p_passed')}/{rw.get('f2p_total')}" if rw.get("f2p_total") is not None else "-"
+                recording += f", {rec_f2p[0]} of {rec_f2p[1]} target tests"
             ag = r.get("agent") or {}
-            lines.append(f"| `{r['unit']}` | {rec_text} ({prefix.get('recorded_config')}) | {'end' if steps == -1 else f'{steps}/{total}'} | "
-                         f"{o} | {ours_f2p} | {(ag.get('steps') or 0) - (ag.get('replayed_steps') or 0)} | {ag.get('exit_status') or '-'} |")
-            if steps == -1 and rec is not None and o in ("solved", "model"):
-                fidelity.append((float(rec) >= 1) == (o == "solved"))
-        lines += ["", "| resumed at | solved | of |", "| --- | ---: | ---: |"]
-        for bucket in sorted(buckets, key=lambda b: (b == "full replay", float(b.rstrip("%")) if b != "full replay" else 0)):
-            outs = [o for o in buckets[bucket] if o not in EXCLUDED]
-            lines.append(f"| {bucket} | {outs.count('solved')} | {len(outs)} |")
+            stopped = {"Submitted": "submitted"}.get(ag.get("exit_status"), f"`{ag['exit_status']}`" if ag.get("exit_status") else "-")
+            rw = r.get("rewards") or {}
+            ours_tests = f"{rw.get('f2p_passed')} of {rw.get('f2p_total')}" if rw.get("f2p_total") is not None else "-"
+            lines.append(f"| `{r['unit']}` | {recording} ({prefix.get('recorded_config')}) | "
+                         f"{'end' if steps == -1 else f'{steps} of {total}'} | {o} | {ours_tests} | "
+                         f"{(ag.get('steps') or 0) - (ag.get('replayed_steps') or 0)} | {stopped} |")
+            if steps == -1 and rec is not None and o in ("passed", "failed tests"):
+                same_grade.append((float(rec) >= 1) == (o == "passed"))
+        lines += ["", TESTS_NOTE, "", "| continued from | passed | of |", "| --- | ---: | ---: |"]
+        for bucket in sorted(buckets, key=lambda b: (b == "replayed to the end", float(b.split("%")[0]) if "%" in b else 0)):
+            counted = [o for o in buckets[bucket] if o not in NOT_COUNTED]
+            lines.append(f"| {bucket} | {counted.count('passed')} | {len(counted)} |")
         lines.append("")
         replays = [(r["unit"], (r.get("agent") or {}).get("replay")) for r in records if (r.get("agent") or {}).get("replay")]
         if replays:
-            lines += ["## Replay fidelity", ""]
-            if fidelity:
-                lines.append(f"- full replays graded the same as the recorded rollout: **{sum(fidelity)}/{len(fidelity)}**")
+            lines += ["## Did the replay match the recording?", ""]
+            if same_grade:
+                lines.append(f"- Replays run to the end that got the same grade as the recording: **{sum(same_grade)} of {len(same_grade)}**")
             diverged = [(u, rp) for u, rp in replays if rp.get("steps_with_different_output")]
-            lines.append(f"- replays whose commands printed something different from the recording: {len(diverged)}/{len(replays)}"
-                         " (timestamps, temp paths and test timings make some of this normal; look at the first differing step)")
+            lines.append(f"- Replays where some command printed something different from the recording: {len(diverged)} of {len(replays)}. "
+                         "Some of this is normal: timings, file sizes, dates, and files listed in a different order.")
+            names = {"numbers": "only numbers differ", "order": "same lines, different order", "content": "different content"}
             for u, rp in diverged[:20]:
                 diff = rp["steps_with_different_output"]
                 kinds = rp.get("differences") or {}
-                detail = ", ".join(f"{kind} {len(steps)}" for kind, steps in sorted(kinds.items()))
-                first_content = f"; first content difference at step {kinds['content'][0]}" if kinds.get("content") else ""
+                detail = "; ".join(f"{names.get(k, k)}: {len(s)}" for k, s in sorted(kinds.items()))
+                first = f". First step with different content: {kinds['content'][0]}" if kinds.get("content") else ""
                 lines.append(f"  - `{u}`: {len(diff)} of {rp['steps_replayed']} steps"
-                             + (f" ({detail}){first_content}" if detail else f", first at step {diff[0]}"))
+                             + (f" ({detail}){first}" if detail else f", starting at step {diff[0]}"))
             prompt_diff = sum(1 for _, rp in replays if rp.get("prompt_matches_recording") is False)
             if prompt_diff:
-                lines.append(f"- {prompt_diff} replay(s) rendered a different prompt from the recording (usually only the "
-                             "`system_information` uname line, which names the host kernel)")
+                lines.append(f"- The task prompt differed from the recording in {prompt_diff} replay(s). That's expected: "
+                             "the prompt includes a line describing the machine it runs on.")
             lines.append("")
 
-    failures = [(r, o) for r, o in zip(records, owners) if o != "solved"]
+    failures = [(r, o) for r, o in zip(records, outcomes) if o != "passed"]
     if failures:
-        lines += ["## Non-passing rollouts", ""]
+        lines += ["## Rollouts that didn't pass", ""]
         for r, o in failures:
-            head = f"- `{r['unit']}` — **{o}**"
             ag = r.get("agent") or {}
-            if ag.get("exit_status"):
-                head += f", exit `{ag['exit_status']}`"
+            head = f"- `{r['unit']}`: {OUTCOMES[o][1]}"
+            tests = tests_text(r.get("rewards") or {})
+            if tests:
+                head += f" ({tests})"
             exc = r.get("exception") or {}
-            if exc.get("type"):
+            if o == "api errors" and ag.get("exit_status"):
+                head += f". Last error: `{ag['exit_status']}`"
+            elif exc.get("type"):
                 first = str(exc.get("message") or "").strip().splitlines()
-                head += f", `{exc['type']}`" + (f": {first[0][:200]}" if first else "")
-            rw = r.get("rewards") or {}
-            if rw.get("f2p_total") is not None:
-                head += f" (f2p {rw.get('f2p_passed')}/{rw.get('f2p_total')}, p2p {rw.get('p2p_passed')}/{rw.get('p2p_total')})"
+                head += f". Error: `{exc['type']}`" + (f" {first[0][:200]}" if first else "")
             rep = ag.get("repeats") or {}
             if rep.get("longest_streak", 0) >= LOOP_STREAK:
-                head += f"; **repeat streak of {rep['longest_streak']} steps from step {rep['streak_starts_at']}**"
+                head += f". **Repeated itself for {rep['longest_streak']} steps starting at step {rep['streak_starts_at']}**"
             if r.get("logs"):
-                head += f" — `results-shard-{r['shard']}/{r['logs']}`"
+                head += f". Logs: `results-shard-{r['shard']}/{r['logs']}`"
             lines.append(head)
-            lines += [f"  - `{test['name'][:160]}`" for test in (r.get("failed_tests") or [])[:3]]
+            lines += [f"  - failing: `{test['name'][:160]}`" for test in (r.get("failed_tests") or [])[:3]]
         lines.append("")
+        if TESTS_NOTE not in lines:
+            lines += [TESTS_NOTE, ""]
 
-    run_id = str(meta.get("run_url", "")).rstrip("/").split("/")[-1]
-    lines += ["## Digging in", "",
-              f"- logs and trajectories: `gh run download {run_id or '<run id>'} -n results-shard-<N>`",
-              "- ask a provider for one step of any trajectory, no container: "
-              "`python3 -m dswe.probe <provider:model> <logs>/trajectory.json --steps K`",
-              f"- resume these rollouts elsewhere: `prefix=trials=run:{run_id or '<run id>'}/<unit> steps=50%`",
+    run_id = str(meta.get("run_url", "")).rstrip("/").split("/")[-1] or "<run id>"
+    lines += ["## Digging further", "",
+              f"- Download a shard's logs and full trajectories: `gh run download {run_id} -n results-shard-<N>`",
+              "- Ask a provider for just one step of a trajectory, no container needed: "
+              "`python3 -m dswe.probe <provider:model> <logs>/trajectory.json --steps <step>`",
+              f"- Continue one of these rollouts from some step, on any provider: run `run.yml` with "
+              f"`prefix=trials=run:{run_id}/<rollout> steps=<step>`",
               ""]
 
     summary = "\n".join(lines)
     (args.out / "summary.md").write_text(summary)
-    results["records"] = [{**r, "owner": o} for r, o in zip(records, owners)]
+    results["records"] = [{**r, "outcome": o} for r, o in zip(records, outcomes)]
     (args.out / "results.json").write_text(json.dumps(results, indent=2))
     print(summary)
 

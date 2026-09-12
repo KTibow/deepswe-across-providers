@@ -56,17 +56,17 @@ used, not the 10800 s in `task.toml` — so timeouts stay comparable.
 
 The job summary (also `report/summary.md`, with everything in `results.json`):
 
-1. **Verdict.** Rollouts solved, next to how many the reference config would
-   be expected to solve on the same tasks, with a z-score. Each task's
-   expected rate blends the reference config's four published rollouts with
-   every config's rate on that task, so a task glm-5.3 solved 4/4 expects
+1. **Result.** A sentence: in line with, worse than, or better than the
+   published run of the same model, with how many rollouts passed, how many
+   that run would be expected to pass on these tasks, and the normal range.
+   Each task's expected rate blends the published config's four rollouts with
+   every model's rate on that task, so a task glm-5.3 passed 4 of 4 expects
    about 0.9, not 1.0.
-2. **Outcomes by owner.** Every rollout that didn't pass is put on one of: the
-   model (submitted and failed the tests), the provider (a call still failing
-   after mini-swe-agent's 10 retries), format errors, agent timeout, or our
-   own infrastructure or grading. The last two are left out of the score and
-   should be rerun.
-3. **Inference health.** From mini-swe-agent's own trajectory for every live
+2. **What happened to each rollout.** Passed; finished but failed the tests;
+   gave up after API errors (a call still failing after 10 retries); gave up
+   after three unusable replies in a row; ran out of time; or our own setup or
+   the grader broke. The last two aren't counted and should be rerun.
+3. **How the API behaved.** From mini-swe-agent's own trajectory for every
    call: retries by error type, finish reasons, format errors, empty replies,
    C1 control characters (UTF-8 mis-decoded as Latin-1), wait per call, output
    tokens, cache hit share — and median steps, tokens, minutes and cost per

@@ -61,19 +61,20 @@ def select_tasks(args: argparse.Namespace, every: list[str]) -> tuple[list[str],
         unmatched = [p for p in patterns if not any(fnmatch(t, p) for t in every)]
         if unmatched:
             sys.exit(f"no task matched: {unmatched}")
-        return [t for t in every if any(fnmatch(t, p) for p in patterns)], "explicit"
+        chosen = [t for t in every if any(fnmatch(t, p) for p in patterns)]
+        return chosen, f"{len(chosen)} chosen task(s)"
     if args.subset:
         data = json.loads((REPO / "subsets" / f"{args.subset}.json").read_text())
         tasks = [row["task"] for row in data["tasks"]]
         missing = sorted(set(tasks) - set(every))
         if missing:
             sys.exit(f"subset {args.subset} names tasks not in this benchmark checkout: {missing}")
-        return sorted(tasks), f"subset {args.subset}"
+        return sorted(tasks), f"subset {args.subset} ({len(tasks)} tasks)"
     if 0 < args.n_tasks < len(every):
         shuffled = list(every)
         random.Random(args.seed).shuffle(shuffled)
-        return sorted(shuffled[: args.n_tasks]), f"sample(seed={args.seed}, n={args.n_tasks})"
-    return list(every), "all"
+        return sorted(shuffled[: args.n_tasks]), f"{args.n_tasks} tasks sampled with seed {args.seed}"
+    return list(every), f"all {len(every)} tasks"
 
 
 def resolve_steps(spec: str, total: int) -> int:
@@ -187,7 +188,7 @@ def make(args: argparse.Namespace) -> None:
                 if unknown:
                     sys.exit(f"not a published rollout: {unknown}")
                 sources += [published_source(by_name[t]) for t in names]
-            mode = "prefix(explicit)"
+            mode = "continuing named recorded rollouts"
         else:
             if not reference_config:
                 sys.exit("--prefix-pick needs a profile with a reference_config")
@@ -195,7 +196,8 @@ def make(args: argparse.Namespace) -> None:
             rows = published.table("trials")
             by_name = {r["trial_name"]: r for r in rows}
             sources = [published_source(by_name[t]) for t in pick_trials(tasks, reference_config, args.prefix_pick, rows)]
-            mode = f"prefix({args.prefix_pick} rollouts of {reference_config} on {mode})"
+            kind = {"pass": "passing ", "fail": "failing ", "any": ""}[args.prefix_pick]
+            mode = f"continuing {kind}published rollouts of {reference_config} on {mode}"
         (out_dir / "prefixes").mkdir(parents=True, exist_ok=True)
         for source in sources:
             trial, traj = source["trial"], source["traj"]
@@ -245,6 +247,7 @@ def make(args: argparse.Namespace) -> None:
         "profile": asdict(profile) if profile else None,
         "reference_config": reference_config,
         "selection": mode,
+        "tasks_from": "rollouts" if explicit_trials else "selection",
         "tasks": sorted({u["task"] for u in units}),
         "units": units,
         "shards": shards,
