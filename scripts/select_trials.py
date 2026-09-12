@@ -39,6 +39,11 @@ def main() -> None:
     ap.add_argument("--trials-json", type=Path, help="local copy instead of fetching")
     ap.add_argument("--site", default=SITE)
     ap.add_argument("--artifact-base", default=ARTIFACT_BASE)
+    ap.add_argument(
+        "--trial-names",
+        default="",
+        help="explicit trial names (space/comma separated); bypasses sampling",
+    )
     ap.add_argument("--models", default="", help="model globs, empty = any")
     ap.add_argument("--configs", default="", help="config globs, empty = any")
     ap.add_argument("--tasks", default="", help="task globs, empty = any")
@@ -69,7 +74,11 @@ def main() -> None:
     rows: list[dict[str, Any]] = payload["rows"]
     print(f"{len(rows)} published rollouts", file=sys.stderr)
 
+    explicit = csv_list(args.trial_names)
+
     def keep(row: dict[str, Any]) -> bool:
+        if explicit:
+            return row["trial_name"] in explicit
         if not row.get("has_model_patch"):
             return False
         if not row.get("included_in_score", True):
@@ -92,10 +101,17 @@ def main() -> None:
     if not pool:
         sys.exit("nothing to replay")
 
+    if explicit:
+        missing = set(explicit) - {r["trial_name"] for r in pool}
+        if missing:
+            sys.exit(f"no such rollout(s): {sorted(missing)}")
+
     rng = random.Random(args.seed)
     pool.sort(key=lambda r: r["trial_name"])
 
-    if args.balance:
+    if explicit:
+        chosen = list(pool)
+    elif args.balance:
         passing = [r for r in pool if r.get("outcome") == "pass"]
         failing = [r for r in pool if r.get("outcome") == "fail"]
         rng.shuffle(passing)

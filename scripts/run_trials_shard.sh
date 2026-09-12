@@ -7,6 +7,7 @@ set -uo pipefail
 PLAN="${PLAN:-trial-plan.json}"
 TASKS_DIR="${TASKS_DIR:-deep-swe/tasks}"
 TASK_TIMEOUT="${TASK_TIMEOUT:-3600}"
+ATTEMPTS="${ATTEMPTS:-1}"
 DISK_FLOOR_GB="${DISK_FLOOR_GB:-25}"
 
 mkdir -p out jobs patches
@@ -54,6 +55,7 @@ while IFS=$'\t' read -r trial task patch_url; do
         --ak "patch_path=${patch}" \
         --jobs-dir jobs \
         --job-name "${trial}" \
+        --n-attempts "${ATTEMPTS}" \
         --n-concurrent 1 \
         --yes \
         --quiet \

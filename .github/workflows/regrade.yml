@@ -13,6 +13,14 @@ on:
         description: "How many rollouts to regrade"
         type: string
         default: "10"
+      trials:
+        description: "Explicit rollout names (space/comma separated); bypasses sampling"
+        type: string
+        default: ""
+      attempts:
+        description: "Replays per rollout (>1 measures verifier flakiness)"
+        type: string
+        default: "1"
       models:
         description: "Model globs (empty = any)"
         type: string
@@ -71,6 +79,7 @@ jobs:
         run: |
           python3 scripts/select_trials.py \
             --release "${{ inputs.release }}" \
+            --trial-names "${{ inputs.trials }}" \
             --models "${{ inputs.models }}" \
             --tasks "${{ inputs.tasks }}" \
             --outcome "${{ inputs.outcome }}" \
@@ -132,6 +141,7 @@ jobs:
           TRIALS: ${{ matrix.trials }}
           PLAN: trial-plan.json
           TASK_TIMEOUT: ${{ inputs.task_timeout }}
+          ATTEMPTS: ${{ inputs.attempts }}
           STAGGER_MAX_SEC: "45"
         run: bash scripts/run_trials_shard.sh
 
