@@ -12,11 +12,30 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 KEEP_LOGS = ("reward.json", "ctrf.json", "test-stdout.txt", "run.log")
 STDOUT_TAIL = 6000
+
+
+def _duration(phase: Any) -> float | None:
+    """TimingInfo carries started_at/finished_at, not a duration."""
+    if not isinstance(phase, dict):
+        return None
+    if phase.get("duration_sec") is not None:
+        return phase["duration_sec"]
+    start, end = phase.get("started_at"), phase.get("finished_at")
+    if not start or not end:
+        return None
+    try:
+        return (
+            datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+            - datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        ).total_seconds()
+    except ValueError:
+        return None
 
 
 def load_json(path: Path) -> Any:
@@ -140,10 +159,24 @@ def main() -> None:
             if exc
             else None,
             "timings": {
-                key: (data.get(key) or {}).get("duration_sec")
+                key: _duration(data.get(key))
                 for key in ("environment_setup", "agent_setup", "agent_execution", "verifier")
                 if isinstance(data.get(key), dict)
             },
+            "metrics": {
+                key: (data.get("agent_result") or {}).get(key)
+                for key in (
+                    "n_input_tokens",
+                    "n_cache_tokens",
+                    "n_output_tokens",
+                    "cost_usd",
+                    "peak_context_tokens",
+                    "summarization_count",
+                    "n_agent_steps",
+                )
+            },
+            "n_agent_steps": data.get("n_agent_steps")
+            or (data.get("agent_result") or {}).get("n_agent_steps"),
             "started_at": data.get("started_at"),
             "finished_at": data.get("finished_at"),
             "failed_tests": failed_tests(load_json(verifier_dir / "ctrf.json")),

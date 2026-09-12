@@ -1,0 +1,220 @@
+name: DeepSWE model run
+
+# Runs a real model through mini-swe-agent — the same scaffold DeepSWE's
+# leaderboard uses — on a task subset, then scores it against the published
+# results for exactly those tasks.
+#
+# Requires a repository secret PROVIDER_API_KEY. It is handed to pier as a
+# ${PROVIDER_API_KEY} template, so the value never reaches a command line,
+# a config file, or an artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "litellm model id, e.g. openrouter/qwen/qwen3-coder or openai/gpt-5.5"
+        type: string
+        required: true
+      api_base:
+        description: "OpenAI-compatible base URL (blank = provider default)"
+        type: string
+        default: ""
+      key_var:
+        description: "Env var the agent should read the key from"
+        type: string
+        default: "MSWEA_API_KEY"
+      n_tasks:
+        description: "Tasks to run (0 = all 113)"
+        type: string
+        default: "10"
+      seed:
+        description: "Subset seed — keep fixed to compare runs"
+        type: string
+        default: "0"
+      tasks:
+        description: "Explicit task ids/globs (overrides sampling)"
+        type: string
+        default: ""
+      attempts:
+        description: "Rollouts per task"
+        type: string
+        default: "1"
+      shards:
+        description: "Parallel runners"
+        type: string
+        default: "10"
+      reference_configs:
+        description: "Published configs to compare against (blank = nearest three)"
+        type: string
+        default: ""
+      agent_env:
+        description: "Extra agent env, space separated KEY=VALUE"
+        type: string
+        default: ""
+      agent_kwargs:
+        description: "Extra pier agent kwargs, space separated key=value"
+        type: string
+        default: ""
+      task_timeout:
+        description: "Hard per-task timeout (seconds)"
+        type: string
+        default: "10800"
+      deepswe_ref:
+        description: "datacurve-ai/deep-swe ref"
+        type: string
+        default: "0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea"
+      pier_version:
+        description: "datacurve-pier version"
+        type: string
+        default: "0.3.1"
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      n_selected: ${{ steps.plan.outputs.n_selected }}
+      mode: ${{ steps.plan.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: datacurve-ai/deep-swe
+          ref: ${{ inputs.deepswe_ref }}
+          path: deep-swe
+      - id: plan
+        run: |
+          python3 scripts/plan.py \
+            --tasks-dir deep-swe/tasks \
+            --tasks "${{ inputs.tasks }}" \
+            --n-tasks "${{ inputs.n_tasks }}" \
+            --seed "${{ inputs.seed }}" \
+            --shards "${{ inputs.shards }}" \
+            --out plan.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plan
+          path: plan.json
+
+  bench:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/powershell \
+                      /usr/local/share/chromium /usr/local/lib/node_modules || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          repository: datacurve-ai/deep-swe
+          ref: ${{ inputs.deepswe_ref }}
+          path: deep-swe
+
+      - name: Install pier
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Pin pier version
+        run: |
+          uv tool install "datacurve-pier==${{ inputs.pier_version }}"
+          pier --version
+
+      - name: Run shard ${{ matrix.shard }}
+        env:
+          TASKS: ${{ matrix.tasks }}
+          MODEL: ${{ inputs.model }}
+          API_BASE: ${{ inputs.api_base }}
+          KEY_VAR: ${{ inputs.key_var }}
+          ATTEMPTS: ${{ inputs.attempts }}
+          TASK_TIMEOUT: ${{ inputs.task_timeout }}
+          EXTRA_AGENT_ENV: ${{ inputs.agent_env }}
+          EXTRA_AGENT_KWARGS: ${{ inputs.agent_kwargs }}
+          PROVIDER_API_KEY: ${{ secrets.PROVIDER_API_KEY }}
+        run: bash scripts/run_bench_shard.sh
+
+      - name: Collect results
+        if: always()
+        run: |
+          find jobs -maxdepth 3 | head -50 || true
+          python3 scripts/collect.py \
+            --jobs-dir jobs \
+            --status out/status.jsonl \
+            --shard "${{ matrix.shard }}" \
+            --runner "${{ runner.name }}" \
+            --agent "mini-swe-agent:${{ inputs.model }}" \
+            --out results
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-shard-${{ matrix.shard }}
+          path: |
+            results
+            out/*.log
+          retention-days: 30
+
+  report:
+    needs: [plan, bench]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-shard-*
+          merge-multiple: true
+          path: shards
+
+      - name: Build metadata
+        run: |
+          cat > meta.json <<EOF
+          {
+            "model": "${{ inputs.model }}",
+            "api_base": "${{ inputs.api_base }}",
+            "attempts_per_task": "${{ inputs.attempts }}",
+            "selection": "${{ needs.plan.outputs.mode }}",
+            "n_tasks": "${{ needs.plan.outputs.n_selected }}",
+            "seed": "${{ inputs.seed }}",
+            "harness": "mini-swe-agent",
+            "deepswe_ref": "${{ inputs.deepswe_ref }}",
+            "pier_version": "${{ inputs.pier_version }}",
+            "runner_image": "ubuntu-latest",
+            "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+          EOF
+
+      - name: Score
+        run: |
+          python3 scripts/aggregate_bench.py \
+            --results-dir shards \
+            --plan plan.json \
+            --meta meta.json \
+            --reference-configs "${{ inputs.reference_configs }}" \
+            --out report
+          cat report/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: report
+          path: report
+          retention-days: 90
