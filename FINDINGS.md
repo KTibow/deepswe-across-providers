@@ -14,6 +14,7 @@ the held-out verifier:
 | [smoke, one task per language](https://github.com/KTibow/deepswe-across-providers/actions/runs/34709187966) | 5 | reward 1 each | **5/5** |
 | [seed 0 sample](https://github.com/KTibow/deepswe-across-providers/actions/runs/34709631628) | 12 | reward 1 each | **12/12** |
 | [empty control (`nop`)](https://github.com/KTibow/deepswe-across-providers/actions/runs/34710135561) | 12 | reward 0 each | **12/12** |
+| [full sweep](https://github.com/KTibow/deepswe-across-providers/actions/runs/34711567315) | **113** | reward 1 each | **113/113** |
 
 The two runs bracket the benchmark exactly. On the same 12 tasks, `oracle`
 passes every fail-to-pass and pass-to-pass node (`44/44` f2p and `2738/2738` p2p
@@ -27,6 +28,34 @@ Cost of the environment itself: **median 108 s per task** end to end (image pull
 apply, full test suite, grade), min 84 s, max 266 s. With the image already
 pulled, container start is ~1 s and grading is 25–178 s depending on the suite.
 That is the floor a model run adds its own thinking time to.
+
+### Every reference solution grades correctly in v1.1
+
+The full 113-task sweep passes — 34/34 Go, 34/34 Python, 35/35 TypeScript, 5/5
+JavaScript, 5/5 Rust, every f2p and p2p node.
+
+That settles an open report against v1.0. [deep-swe#30](https://github.com/datacurve-ai/deep-swe/issues/30)
+found **105/113** under the old exit-code grading: 6 tasks broken by unpinned
+dependency drift (`narwhals-rolling-window-suite` on polars 1.40, `skrub-duration-encoding`,
+`dateutil-rfc5545-timezone-interop`, `langchain-request-coalescing`,
+`fd-deterministic-multi-key-sorting`, `igel-persist-feature-schema`) and 2 where
+the reference solution genuinely failed (`mnamer-daemon-watch-lifecycle`,
+`helm-unified-manifest-stream`). All 8 pass here under v1.1:
+
+| task | f2p | p2p |
+| --- | ---: | ---: |
+| `narwhals-rolling-window-suite` | 103/103 | 10093/10093 |
+| `skrub-duration-encoding` | 130/130 | 2784/2784 |
+| `dateutil-rfc5545-timezone-interop` | 67/67 | 2035/2035 |
+| `langchain-request-coalescing` | 50/50 | 232/232 |
+| `fd-deterministic-multi-key-sorting` | 43/43 | 109/109 |
+| `igel-persist-feature-schema` | 24/24 | 2/2 |
+| `mnamer-daemon-watch-lifecycle` | 51/51 | 319/319 |
+| `helm-unified-manifest-stream` | 5/5 | 2/2 |
+
+Node-id whitelists plus rebuilt `-v1.1` images fixed the class where one
+unrelated broken baseline test zeroed a correct solution
+([deep-swe#17](https://github.com/datacurve-ai/deep-swe/issues/17)).
 
 ## 2. Our verdicts match Datacurve's on their own rollouts
 
@@ -56,6 +85,35 @@ No task is unsolvable (every one of the 113 was solved by someone) and none is
 free (none was solved by everyone).
 
 ## 4. Things that will cost you a run if you don't know them
+
+### A task whose score is a coin flip
+
+`langchain-request-coalescing` replayed **10 times from the identical patch**,
+same workflow, same runner image:
+
+| outcome | attempts |
+| --- | ---: |
+| f2p 50/50 → reward 1 | **2** |
+| f2p 49/50 → reward 0 | **8** |
+
+The one test that moves is `test_coalesce.test_batch_per_item_coalescing`: it
+starts a thread, calls `inner.release()`, and asserts two identical batch items
+coalesced into one call (`assert 3 == 2` when they don't). Nothing about the
+submission changes between attempts — only thread scheduling does.
+
+DeepSWE published this rollout as a fail; our first replay of it passed, which
+is how we found it. So for this task the binary reward is roughly a 1-in-5 coin
+flip, and its published pass rate (a task solved in 40% of rollouts) mixes model
+skill with that coin.
+
+Related open reports: [deep-swe#45](https://github.com/datacurve-ai/deep-swe/issues/45)
+(`prometheus-transactional-reload-status` carries 21 `TestQueryLog` entries in
+its pass-to-pass whitelist — an upstream-known flaky test unrelated to the
+task). Those entries are still present in the v1.1 config; the task passed
+82/82 in our sweep, so it didn't flake that run, but the exposure is there.
+
+**For provider comparison this is the noise floor.** A gap of a few points
+between two runs on a small subset can be entirely this.
 
 ### Registry rate limits, not task failures
 
@@ -131,13 +189,35 @@ exactly the failure you're shopping for. Published error categories:
 `provider_timeout` 35, `unclassified_exception` 5, `upstream_provider_error` 3,
 `context_window_exceeded` 1, `rate_limit` 1.
 
+### The HuggingFace mirror is still v1.0
+
+`datacurve/deep-swe` on HuggingFace is gated, but its public file listing shows
+what it contains:
+
+| | HF mirror | GitHub v1.1 |
+| --- | ---: | ---: |
+| `tests/config.json` (node-id whitelists) | 0 | 113 |
+| `tests/grader.py` | 0 | 113 |
+| Dockerfiles | 113 | 226 (separate verifier env) |
+
+Last modified 2026-06-02; the v1.1 task changes landed 2026-08-26. Pulling the
+dataset from HuggingFace gets you exit-code grading — the regime with the
+false-negative class above, and scores that differ from the live leaderboard.
+Clone the GitHub repo at a pinned SHA instead, which is what these workflows do.
+
 ### Two smaller ones
 
 - **Subset sampling isn't portable.** pier's `--n-tasks/--sample-seed` shuffles
   in `Path.iterdir()` order — filesystem order, not sorted — so the same seed
   can pick different tasks on different machines.
   `scripts/plan.py` sorts first.
+- **A language tag is wrong.** `prometheus-transactional-reload-status` is
+  tagged `typescript` in `manifest.json` while its repo is `prometheus/prometheus`
+  (its sister task `prometheus-typed-label-sorting` is correctly tagged `go`).
+  Matches [deep-swe#53](https://github.com/datacurve-ai/deep-swe/issues/53);
+  it skews any per-language breakdown, including the table above.
 - **~2.4% of published submissions aren't downloadable.** Of 250 sampled
   rollouts with `has_model_patch: true`, 6 return HTTP 403 from the artifact
   CDN (confirmed on retry, not throttling), and one is zero bytes. The regrade
-  runner records these as skipped rather than scoring them 0.
+  runner records these as skipped rather than scoring them 0. Reported upstream
+  as [deep-swe#59](https://github.com/datacurve-ai/deep-swe/issues/59).
