@@ -9,6 +9,9 @@ TASKS_DIR="${TASKS_DIR:-deep-swe/tasks}"
 TASK_TIMEOUT="${TASK_TIMEOUT:-3600}"
 ATTEMPTS="${ATTEMPTS:-1}"
 DISK_FLOOR_GB="${DISK_FLOOR_GB:-25}"
+# Tasks declare 2 CPUs / 8 GB; a 4-vCPU runner fits two at once, which
+# roughly halves wall clock when repeating a task with --n-attempts.
+CONCURRENCY="${CONCURRENCY:-1}"
 
 mkdir -p out jobs patches
 : > out/status.jsonl
@@ -56,13 +59,12 @@ while IFS=$'\t' read -r trial task patch_url; do
         --jobs-dir jobs \
         --job-name "${trial}" \
         --n-attempts "${ATTEMPTS}" \
-        --n-concurrent 1 \
+        --n-concurrent "${CONCURRENCY}" \
         --yes \
         --quiet \
-      > "out/${trial}.log" 2>&1
+      2>&1 | tee "out/${trial}.log"
     rc=$?
-    echo "--- pier exit=${rc} (tail) ---"
-    tail -c 3000 "out/${trial}.log"
+    echo "--- pier exit=${rc} ---"
   fi
 
   elapsed=$(( $(date +%s) - start ))

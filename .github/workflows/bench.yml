@@ -55,6 +55,10 @@ on:
         description: "Extra pier agent kwargs, space separated key=value"
         type: string
         default: ""
+      concurrency:
+        description: "Trials to run at once per runner (2 fits a 4-vCPU runner)"
+        type: string
+        default: "1"
       task_timeout:
         description: "Hard per-task timeout (seconds)"
         type: string
@@ -143,6 +147,7 @@ jobs:
           KEY_VAR: ${{ inputs.key_var }}
           ATTEMPTS: ${{ inputs.attempts }}
           TASK_TIMEOUT: ${{ inputs.task_timeout }}
+          CONCURRENCY: ${{ inputs.concurrency }}
           STAGGER_MAX_SEC: "45"
           EXTRA_AGENT_ENV: ${{ inputs.agent_env }}
           EXTRA_AGENT_KWARGS: ${{ inputs.agent_kwargs }}

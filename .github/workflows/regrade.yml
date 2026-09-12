@@ -58,6 +58,10 @@ on:
         description: "datacurve-pier version"
         type: string
         default: "0.3.1"
+      concurrency:
+        description: "Trials to run at once per runner (2 fits a 4-vCPU runner)"
+        type: string
+        default: "1"
       task_timeout:
         description: "Hard per-rollout timeout (seconds)"
         type: string
@@ -142,6 +146,7 @@ jobs:
           PLAN: trial-plan.json
           TASK_TIMEOUT: ${{ inputs.task_timeout }}
           ATTEMPTS: ${{ inputs.attempts }}
+          CONCURRENCY: ${{ inputs.concurrency }}
           STAGGER_MAX_SEC: "45"
         run: bash scripts/run_trials_shard.sh
 

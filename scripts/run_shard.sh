@@ -9,6 +9,9 @@ ATTEMPTS="${ATTEMPTS:-1}"
 TASK_TIMEOUT="${TASK_TIMEOUT:-3600}"
 TASKS_DIR="${TASKS_DIR:-deep-swe/tasks}"
 DISK_FLOOR_GB="${DISK_FLOOR_GB:-25}"
+# Tasks declare 2 CPUs / 8 GB; a 4-vCPU runner fits two at once, which
+# roughly halves wall clock when repeating a task with --n-attempts.
+CONCURRENCY="${CONCURRENCY:-1}"
 
 mkdir -p out jobs
 : > out/status.jsonl
@@ -33,14 +36,13 @@ for task in $TASKS; do
       --jobs-dir jobs \
       --job-name "${task}" \
       --n-attempts "${ATTEMPTS}" \
-      --n-concurrent 1 \
+      --n-concurrent "${CONCURRENCY}" \
       --yes \
       --quiet \
-    > "out/${task}.log" 2>&1
+    2>&1 | tee "out/${task}.log"
   rc=$?
   elapsed=$(( $(date +%s) - start ))
-  echo "--- pier exit=${rc} in ${elapsed}s (tail of log) ---"
-  tail -c 3000 "out/${task}.log"
+  echo "--- pier exit=${rc} in ${elapsed}s ---"
 
   TASK="${task}" RC="${rc}" SECS="${elapsed}" python3 - >> out/status.jsonl <<'PY'
 import json, os

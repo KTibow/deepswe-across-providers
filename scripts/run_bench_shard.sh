@@ -14,6 +14,9 @@ API_BASE="${API_BASE:-}"
 EXTRA_AGENT_ENV="${EXTRA_AGENT_ENV:-}"
 EXTRA_AGENT_KWARGS="${EXTRA_AGENT_KWARGS:-}"
 DISK_FLOOR_GB="${DISK_FLOOR_GB:-25}"
+# Tasks declare 2 CPUs / 8 GB; a 4-vCPU runner fits two at once, which
+# roughly halves wall clock when repeating a task with --n-attempts.
+CONCURRENCY="${CONCURRENCY:-1}"
 
 if [ -z "${PROVIDER_API_KEY:-}" ]; then
   echo "PROVIDER_API_KEY is empty — set the repository secret before dispatching" >&2
@@ -51,14 +54,13 @@ for task in $TASKS; do
       --jobs-dir jobs \
       --job-name "${task}" \
       --n-attempts "${ATTEMPTS}" \
-      --n-concurrent 1 \
+      --n-concurrent "${CONCURRENCY}" \
       --yes \
       --quiet \
-    > "out/${task}.log" 2>&1
+    2>&1 | tee "out/${task}.log"
   rc=$?
   elapsed=$(( $(date +%s) - start ))
-  echo "--- pier exit=${rc} in ${elapsed}s (tail) ---"
-  tail -c 3000 "out/${task}.log"
+  echo "--- pier exit=${rc} in ${elapsed}s ---"
 
   TASK="${task}" RC="${rc}" SECS="${elapsed}" python3 - >> out/status.jsonl <<'PY'
 import json, os
