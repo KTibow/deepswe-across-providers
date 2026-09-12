@@ -1,0 +1,117 @@
+{
+  "name": "glm-5.3-sentinel",
+  "model": "glm-5.3",
+  "reference_config": "mini_swe_agent_glm_5_3_max",
+  "kind": "sentinel",
+  "rule": "tasks the reference config solved every time, shortest first.\n  A healthy provider should pass nearly all of them, so each failure is\n  informative; a subset of tasks the model already fails can't show a\n  provider making it worse.\n* representative \u2014 stratified by how many of the four the reference config\n  solved, in proportion to the whole benchmark, so the subset's expected\n  score is close to the config's headline number. Shortest tasks within each\n  stratum, to keep runs cheap.",
+  "expected_pass_rate": 0.9182,
+  "reference_pass_rate_here": 1.0,
+  "reference_pass_rate_overall": 0.6896,
+  "median_agent_seconds": 1211.5,
+  "tasks": [
+    {
+      "task": "dasel-html-document-format",
+      "language": "go",
+      "repo": "TomWright/dasel",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.5616,
+      "expected": 0.8539,
+      "median_agent_seconds": 1015,
+      "median_steps": 87.0
+    },
+    {
+      "task": "drizzle-orm-window-function-builders",
+      "language": "typescript",
+      "repo": "drizzle-team/drizzle-orm",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.8964,
+      "expected": 0.9655,
+      "median_agent_seconds": 1155,
+      "median_steps": 107.0
+    },
+    {
+      "task": "fd-deterministic-multi-key-sorting",
+      "language": "rust",
+      "repo": "sharkdp/fd",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.6763,
+      "expected": 0.8921,
+      "median_agent_seconds": 1291,
+      "median_steps": 111.0
+    },
+    {
+      "task": "ipython-session-bundle-replay",
+      "language": "python",
+      "repo": "ipython/ipython",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.638,
+      "expected": 0.8793,
+      "median_agent_seconds": 1285,
+      "median_steps": 105.5
+    },
+    {
+      "task": "returns-validated-error-accumulation",
+      "language": "python",
+      "repo": "dry-python/returns",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.8607,
+      "expected": 0.9536,
+      "median_agent_seconds": 1268,
+      "median_steps": 101.0
+    },
+    {
+      "task": "sql-formatter-bigquery-pipe-formatting",
+      "language": "typescript",
+      "repo": "sql-formatter-org/sql-formatter",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.8571,
+      "expected": 0.9524,
+      "median_agent_seconds": 1143,
+      "median_steps": 72.0
+    },
+    {
+      "task": "testem-per-launcher-reports",
+      "language": "javascript",
+      "repo": "testem/testem",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.7312,
+      "expected": 0.9104,
+      "median_agent_seconds": 1695,
+      "median_steps": 105.0
+    },
+    {
+      "task": "ytt-jsonpath-query-api",
+      "language": "go",
+      "repo": "carvel-dev/ytt",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.8152,
+      "expected": 0.9384,
+      "median_agent_seconds": 952,
+      "median_steps": 73.5
+    }
+  ]
+}

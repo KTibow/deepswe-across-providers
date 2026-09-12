@@ -1,0 +1,180 @@
+name: DeepSWE run
+
+# Every kind of run goes through here: a provider on a task subset, published
+# rollouts resumed part way and finished by a provider, published rollouts
+# replayed end to end with no model, and the oracle/nop controls.
+# README.md has examples; dswe/report.py documents what the report says.
+#
+# Provider keys are repository secrets named by `key_env` in providers.toml.
+# pier receives them as ${VAR} templates, so a key never reaches a command
+# line, a config file, or an artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: "provider:model from providers.toml (crof:glm-5.3), or oracle / nop / replay"
+        type: string
+        required: true
+      tasks:
+        description: "subset:NAME | sample:N:SEED | all | task ids/globs"
+        type: string
+        default: "subset:glm-5.3-sentinel"
+      attempts:
+        description: "Rollouts per task (or per resume point)"
+        type: string
+        default: "1"
+      prefix:
+        description: "Resume from recorded rollouts: 'trials=A,B steps=50%,all' or 'pick=fail steps=50%' (blank = start fresh)"
+        type: string
+        default: ""
+      shards:
+        description: "Parallel runners"
+        type: string
+        default: "10"
+      concurrency:
+        description: "Trials at once per runner (2 fits a 4-vCPU runner)"
+        type: string
+        default: "1"
+      agent_timeout_multiplier:
+        description: "On task.toml's 10800 s; 0.5 is the 5400 s DeepSWE's published runs used"
+        type: string
+        default: "0.5"
+
+permissions:
+  contents: read
+
+env:
+  DEEPSWE_REF: 0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea
+  PIER_VERSION: 0.3.1
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      selection: ${{ steps.plan.outputs.selection }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: datacurve-ai/deep-swe
+          ref: ${{ env.DEEPSWE_REF }}
+          path: deep-swe
+      - id: plan
+        env:
+          AGENT: ${{ inputs.agent }}
+          TASKS: ${{ inputs.tasks }}
+          PREFIX: ${{ inputs.prefix }}
+          ATTEMPTS: ${{ inputs.attempts }}
+          SHARDS: ${{ inputs.shards }}
+        run: |
+          python3 -m dswe.plan make --agent "$AGENT" --select "$TASKS" --prefix "$PREFIX" \
+            --attempts "$ATTEMPTS" --shards "$SHARDS" --out plan/plan.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plan
+          path: plan
+
+  run:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/powershell \
+                      /usr/local/share/chromium /usr/local/lib/node_modules || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          repository: datacurve-ai/deep-swe
+          ref: ${{ env.DEEPSWE_REF }}
+          path: deep-swe
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+          path: plan
+
+      - name: Install pier
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/uv" tool install "datacurve-pier==${PIER_VERSION}"
+
+      - name: Shard ${{ matrix.shard }}
+        env:
+          UNITS: ${{ matrix.units }}
+          PLAN: plan/plan.json
+          CONCURRENCY: ${{ inputs.concurrency }}
+          AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}
+          STAGGER_MAX_SEC: "45"
+          CROF_KEY: ${{ secrets.CROF_KEY }}
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
+        run: bash scripts/run_shard.sh
+
+      - name: Collect
+        if: always()
+        run: |
+          python3 -m dswe.collect --jobs-dir jobs --status out/status.jsonl \
+            --shard "${{ matrix.shard }}" --runner "${{ runner.name }}" --out results
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-shard-${{ matrix.shard }}
+          path: |
+            results
+            out/*.log
+          retention-days: 90
+
+  report:
+    needs: [plan, run]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+          path: plan
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-shard-*
+          path: shards
+
+      - name: Report
+        env:
+          AGENT: ${{ inputs.agent }}
+          TASKS: ${{ inputs.tasks }}
+          PREFIX: ${{ inputs.prefix }}
+          ATTEMPTS: ${{ inputs.attempts }}
+          AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          meta = {k.lower(): os.environ[k] for k in ("AGENT", "TASKS", "PREFIX", "ATTEMPTS", "AGENT_TIMEOUT_MULTIPLIER")}
+          meta |= {"deepswe_ref": os.environ["DEEPSWE_REF"], "pier_version": os.environ["PIER_VERSION"],
+                   "runner_image": "ubuntu-latest", "run_url": os.environ["RUN_URL"]}
+          json.dump(meta, open("meta.json", "w"), indent=2)
+          PY
+          python3 -m dswe.report --plan plan/plan.json --results-dir shards --meta meta.json --out report
+          cat report/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: report
+          path: report
+          retention-days: 90

@@ -1,0 +1,169 @@
+{
+  "name": "glm-5.3-representative",
+  "model": "glm-5.3",
+  "reference_config": "mini_swe_agent_glm_5_3_max",
+  "kind": "representative",
+  "rule": "stratified by how many of the four the reference config\n  solved, in proportion to the whole benchmark, so the subset's expected\n  score is close to the config's headline number. Shortest tasks within each\n  stratum, to keep runs cheap.",
+  "expected_pass_rate": 0.6322,
+  "reference_pass_rate_here": 0.6667,
+  "reference_pass_rate_overall": 0.6896,
+  "median_agent_seconds": 1216.5,
+  "tasks": [
+    {
+      "task": "bandit-interprocedural-taint-checks",
+      "language": "python",
+      "repo": "PyCQA/bandit",
+      "reference": [
+        2,
+        4
+      ],
+      "pooled_rate": 0.5144,
+      "expected": 0.5048,
+      "median_agent_seconds": 1257,
+      "median_steps": 96.5
+    },
+    {
+      "task": "fd-deterministic-multi-key-sorting",
+      "language": "rust",
+      "repo": "sharkdp/fd",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.6763,
+      "expected": 0.8921,
+      "median_agent_seconds": 1291,
+      "median_steps": 111.0
+    },
+    {
+      "task": "helm-array-merge-strategies",
+      "language": "go",
+      "repo": "helm/helm",
+      "reference": [
+        3,
+        4
+      ],
+      "pooled_rate": 0.2007,
+      "expected": 0.5669,
+      "median_agent_seconds": 2020,
+      "median_steps": 125.0
+    },
+    {
+      "task": "httpx-streaming-json-iteration",
+      "language": "python",
+      "repo": "encode/httpx",
+      "reference": [
+        0,
+        4
+      ],
+      "pooled_rate": 0.4357,
+      "expected": 0.1452,
+      "median_agent_seconds": 1742,
+      "median_steps": 99.0
+    },
+    {
+      "task": "obsidian-linter-auto-table-of-contents",
+      "language": "typescript",
+      "repo": "platers/obsidian-linter",
+      "reference": [
+        0,
+        4
+      ],
+      "pooled_rate": 0.025,
+      "expected": 0.0083,
+      "median_agent_seconds": 970,
+      "median_steps": 74.0
+    },
+    {
+      "task": "psd-tools-blend-range-api",
+      "language": "python",
+      "repo": "psd-tools/psd-tools",
+      "reference": [
+        3,
+        4
+      ],
+      "pooled_rate": 0.8357,
+      "expected": 0.7786,
+      "median_agent_seconds": 1176,
+      "median_steps": 105.5
+    },
+    {
+      "task": "returns-validated-error-accumulation",
+      "language": "python",
+      "repo": "dry-python/returns",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.8607,
+      "expected": 0.9536,
+      "median_agent_seconds": 1268,
+      "median_steps": 101.0
+    },
+    {
+      "task": "sql-formatter-bigquery-pipe-formatting",
+      "language": "typescript",
+      "repo": "sql-formatter-org/sql-formatter",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.8571,
+      "expected": 0.9524,
+      "median_agent_seconds": 1143,
+      "median_steps": 72.0
+    },
+    {
+      "task": "testem-per-launcher-reports",
+      "language": "javascript",
+      "repo": "testem/testem",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.7312,
+      "expected": 0.9104,
+      "median_agent_seconds": 1695,
+      "median_steps": 105.0
+    },
+    {
+      "task": "ts-pattern-match-each",
+      "language": "typescript",
+      "repo": "gvergnaud/ts-pattern",
+      "reference": [
+        3,
+        4
+      ],
+      "pooled_rate": 0.6357,
+      "expected": 0.7119,
+      "median_agent_seconds": 699,
+      "median_steps": 55.0
+    },
+    {
+      "task": "updo-policy-alerting",
+      "language": "go",
+      "repo": "Owloops/updo",
+      "reference": [
+        1,
+        4
+      ],
+      "pooled_rate": 0.172,
+      "expected": 0.224,
+      "median_agent_seconds": 987,
+      "median_steps": 77.0
+    },
+    {
+      "task": "ytt-jsonpath-query-api",
+      "language": "go",
+      "repo": "carvel-dev/ytt",
+      "reference": [
+        4,
+        4
+      ],
+      "pooled_rate": 0.8152,
+      "expected": 0.9384,
+      "median_agent_seconds": 952,
+      "median_steps": 73.5
+    }
+  ]
+}

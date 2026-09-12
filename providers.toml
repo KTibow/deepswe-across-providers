@@ -11,13 +11,13 @@
 
 [providers.crof]
 api_base = "https://crof.ai/v1"
-key_env = "CROF_API_KEY"
+key_env = "CROF_KEY"
 # litellm's openai provider speaks plain chat completions to any base URL.
 litellm_prefix = "openai/"
 
 [providers.openrouter]
 api_base = "https://openrouter.ai/api/v1"
-key_env = "OPENROUTER_API_KEY"
+key_env = "OPENROUTER_KEY"
 litellm_prefix = "openrouter/"
 
 # Published: mini-swe-agent 2.4.2, model zai/glm-5.3, model_class=litellm,
