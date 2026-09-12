@@ -98,7 +98,10 @@ def main() -> None:
             status[entry["task"]] = entry
 
     records: list[dict[str, Any]] = []
-    seen_tasks: set[str] = set()
+    # A status line is keyed by whatever the runner called the unit of work:
+    # a task id for a replay, a trial name for a regrade. Track both so a
+    # completed trial is never mistaken for a missing one.
+    seen_keys: set[str] = set()
 
     # pier writes jobs/<job>/<trial>/result.json per trial and a job-level
     # result.json next to it; the latter has no task_name and is skipped.
@@ -115,7 +118,7 @@ def main() -> None:
         # back to the rollout it came from.
         rel = results_path.relative_to(args.jobs_dir).parts
         job = rel[0] if rel else ""
-        seen_tasks.add(task)
+        seen_keys.update((task, job))
 
         verifier_dir = trial_dir / "verifier"
         reward_json = load_json(verifier_dir / "reward.json")
@@ -203,7 +206,7 @@ def main() -> None:
 
     # Tasks the runner attempted that never produced a trial result at all.
     for task, entry in status.items():
-        if task in seen_tasks:
+        if task in seen_keys:
             continue
         records.append(
             {

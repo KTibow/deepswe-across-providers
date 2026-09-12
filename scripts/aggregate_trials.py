@@ -46,7 +46,11 @@ def main() -> None:
     for shard_file in sorted(args.results_dir.rglob("shard-*.json")):
         for record in json.loads(shard_file.read_text()).get("records", []):
             key = record.get("job") or record.get("task")
-            if key in published:
+            if key not in published:
+                continue
+            # A graded trial always wins over a placeholder for the same rollout.
+            existing = ours.get(key)
+            if existing is None or (existing.get("reward") is None and record.get("reward") is not None):
                 ours[key] = record
 
     rows: list[dict[str, Any]] = []
