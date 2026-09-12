@@ -117,6 +117,13 @@ def main() -> None:
 
     subset_pool_passed = sum(1 for r in in_subset if r.get("passed"))
     subset_pool_total = len(in_subset)
+    all_scored = [r for r in published if r.get("included_in_score")]
+    full_rate = (
+        sum(1 for r in all_scored if r.get("passed")) / len(all_scored)
+        if all_scored
+        else 0.0
+    )
+    subset_rate = subset_pool_passed / subset_pool_total if subset_pool_total else 0.0
 
     lines: list[str] = []
     lines.append("# DeepSWE model run")
@@ -161,11 +168,17 @@ def main() -> None:
 
     lines.append("## Against published results, same tasks")
     lines.append("")
+    swing = 100.0 * (subset_rate - full_rate)
     lines.append(
         f"Across every published config, these {len(subset)} tasks were solved in "
-        f"**{subset_pool_passed}/{subset_pool_total} = "
-        f"{100.0 * subset_pool_passed / subset_pool_total if subset_pool_total else 0:.1f}%** "
-        "of rollouts, so that is roughly what an average leaderboard entry scores here."
+        f"**{subset_pool_passed}/{subset_pool_total} = {100.0 * subset_rate:.1f}%** of "
+        "rollouts, so that is roughly what an average leaderboard entry scores here."
+    )
+    lines.append("")
+    lines.append(
+        f"The full 113-task benchmark sits at {100.0 * full_rate:.1f}%, so this subset is "
+        f"**{abs(swing):.1f} points {'easier' if swing >= 0 else 'harder'} than average** — "
+        "worth subtracting before reading anything into a gap with the leaderboard."
     )
     lines.append("")
     lines.append("| published config | pass rate on these tasks | n |")
@@ -230,6 +243,8 @@ def main() -> None:
                 "policy_rate": our_rate,
                 "reference": {c: ref_rates.get(c) for c in wanted},
                 "subset_pool": [subset_pool_passed, subset_pool_total],
+                "subset_rate": subset_rate,
+                "full_benchmark_rate": full_rate,
                 "records": records,
             },
             indent=2,
