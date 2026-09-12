@@ -43,6 +43,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   DEEPSWE_REF: 0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea
@@ -63,6 +64,9 @@ jobs:
           path: deep-swe
       - id: plan
         env:
+          # For prefix=trials=run:<id>/<unit>, which downloads an earlier run's artifacts.
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           AGENT: ${{ inputs.agent }}
           TASKS: ${{ inputs.tasks }}
           PREFIX: ${{ inputs.prefix }}

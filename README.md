@@ -1,149 +1,154 @@
 # deepswe-across-providers
 
-Running [DeepSWE](https://deepswe.datacurve.ai/) — Datacurve's benchmark of 113
-original, long-horizon software-engineering tasks — in GitHub Actions runners,
-so that a model's score can be compared against Datacurve's published numbers.
+Measure and debug an inference provider on [DeepSWE](https://deepswe.datacurve.ai/),
+Datacurve's benchmark of 113 long-horizon software-engineering tasks, using
+GitHub Actions runners as the containers.
 
-The point is attribution. If you run some model through a cheap inference
-provider and it scores 30% where the leaderboard says 55%, that gap has at
-least four possible owners: the provider, the model, the harness, or your
-runner. This repo nails down the last two first, then measures the model.
+DeepSWE publishes every rollout behind its leaderboard, including full
+trajectories. That makes a sharper test possible than "run the benchmark and
+compare the score": run a model on a provider with exactly the agent settings
+of a published config, compare against that config on the same tasks, and when
+something looks off, resume a published rollout part way through and see where
+the provider's continuation goes wrong.
 
-## Establish the baseline before trusting a number
+The harness itself was checked first — reference solutions pass 113/113, empty
+submissions fail, and our grader agrees with Datacurve's. That work is in
+[archive/2026-09-12-baseline](archive/2026-09-12-baseline).
 
-Four checks, none of which call a model, each with a known-correct answer:
+## Running
 
-| check | workflow | what it proves | correct result |
-| --- | --- | --- | --- |
-| reference replay | `replay.yml` (`agent=oracle`) | the task images, verifiers and graders work on a GitHub runner | reward **1** on every task |
-| empty control | `replay.yml` (`agent=nop`) | tasks aren't passing for free | reward **0** on every task |
-| rollout regrade | `regrade.yml` | our verdicts match Datacurve's on *their* recorded submissions | same verdict as published |
-| leaderboard recompute | `scripts/analyze_published.py` | the published leaderboard follows from the published rollout table | exact match |
-
-`oracle` runs each task's held-out `solution/solve.sh`; `nop` does nothing. Both
-are graded identically — a `[[verifier.collect]]` hook extracts the agent's
-commits as `model.patch` and a pristine verifier container applies it alongside
-the held-out tests. DeepSWE's fail-to-pass and pass-to-pass whitelists were
-*"materialized from the oracle-vs-nop differential"* (`tests/grader.py`), so
-these two expectations are exact, not estimates.
-
-The regrade goes further. DeepSWE publishes all 31,617 rollouts behind its
-leaderboard and, for 28,815 of them, the `model.patch` the agent actually
-submitted. Replaying one of those patches here and grading it is the same
-inputs and the same grader on a different machine, so any disagreement is a
-reproduction difference and nothing else.
-
-## Then measure the model
+Everything is one workflow, `run.yml`. Provider keys are repository secrets
+named in `providers.toml` (`CROF_KEY`, `OPENROUTER_KEY`).
 
 ```bash
-# set the key once
-gh secret set PROVIDER_API_KEY
+# glm-5.3 on crof, on the 8 tasks the published glm-5.3 config always solved
+gh workflow run run.yml -f agent=crof:glm-5.3 -f tasks=subset:glm-5.3-sentinel
 
-# 10 tasks, one rollout each, scored against published results on those tasks
-gh workflow run bench.yml -f model="openrouter/qwen/qwen3-coder" -f n_tasks=10
+# 12 tasks chosen to be as hard as the whole benchmark for glm-5.3, twice each
+gh workflow run run.yml -f agent=crof:glm-5.3 -f tasks=subset:glm-5.3-representative -f attempts=2
 
-# a cheap provider behind an OpenAI-compatible endpoint
-gh workflow run bench.yml \
-  -f model="openai/some-model" \
-  -f api_base="https://api.example.com/v1" \
-  -f n_tasks=10 -f attempts=3
+# take the published glm-5.3 rollout on each sentinel task, replay its first
+# half, and let crof finish it
+gh workflow run run.yml -f agent=crof:glm-5.3 -f tasks=subset:glm-5.3-sentinel -f "prefix=pick=pass steps=50%"
 
-# the same tasks a published config saw, to compare like for like
-gh workflow run bench.yml -f model=... -f n_tasks=20 -f seed=0 \
-  -f reference_configs="mini_swe_agent_claude_opus_5_high"
+# resume one rollout at several points (published, or one of ours)
+gh workflow run run.yml -f agent=openrouter:glm-5.3 \
+  -f "prefix=trials=ytt-jsonpath-query-api__DjxtPgs steps=25%,50%,75%"
+
+# replay published rollouts end to end with no model: should grade as published
+gh workflow run run.yml -f agent=replay -f "prefix=trials=ytt-jsonpath-query-api__DjxtPgs steps=all"
+
+# controls: reference solutions must pass, empty submissions must fail
+gh workflow run run.yml -f agent=oracle -f tasks=sample:12:1
+gh workflow run run.yml -f agent=nop -f tasks=sample:12:1
 ```
 
-Smoke it with one task before spending anything:
+`tasks` takes `subset:NAME`, `sample:N:SEED`, `all`, or task ids and globs.
+`prefix` takes `trials=A,B` (published rollout names) or `pick=pass|fail|any`
+(one rollout of the reference config per selected task), plus
+`steps=N|N%|all` and optionally `observations=recorded|live`.
+
+Runs use a 5400 s agent timeout by default — what DeepSWE's published runs
+used, not the 10800 s in `task.toml` — so timeouts stay comparable.
+
+## What a run tells you
+
+The job summary (also `report/summary.md`, with everything in `results.json`):
+
+1. **Verdict.** Rollouts solved, next to how many the reference config would
+   be expected to solve on the same tasks, with a z-score. Each task's
+   expected rate blends the reference config's four published rollouts with
+   every config's rate on that task, so a task glm-5.3 solved 4/4 expects
+   about 0.9, not 1.0.
+2. **Outcomes by owner.** Every rollout that didn't pass is put on one of: the
+   model (submitted and failed the tests), the provider (a call still failing
+   after mini-swe-agent's 10 retries), format errors, agent timeout, or our
+   own infrastructure or grading. The last two are left out of the score and
+   should be rerun.
+3. **Inference health.** From mini-swe-agent's own trajectory for every live
+   call: retries by error type, finish reasons, format errors, empty replies,
+   C1 control characters (UTF-8 mis-decoded as Latin-1), wait per call, output
+   tokens, cache hit share — and median steps, tokens, minutes and cost per
+   rollout against the reference config's published rollouts on the same
+   tasks.
+4. **Per task**, one mark per rollout.
+5. For resumed runs, **outcome by resume point**, and for replays, whether
+   the replayed commands printed what the recording says they printed.
+
+Each shard's artifact keeps the verifier output and the agent's full
+trajectories, so any of our rollouts can be probed or resumed later.
+
+## Debugging a provider
+
+Work from cheapest to most expensive.
+
+**Probe a single step, no container.** Rebuild the exact history a published
+(or our own) rollout sent at step K, send it to the provider, and compare:
 
 ```bash
-gh workflow run bench.yml -f model="openrouter/..." -f tasks="igel-persist-feature-schema"
+python3 -m dswe.probe crof:glm-5.3 abs-module-cache-flags__KeBKjxc --steps 8,40,90 --key-file /tmp/crof-key.txt
+# step  40: 12.1s  prompt 63521 (recorded 63450 x1.001)  out 258 ...  format=ok
 ```
 
-`mini-swe-agent`'s own knobs go through `agent_kwargs`, space separated —
-`reasoning_effort=high`, `cost_limit=5`, `model_class=...`. pier installs the
-agent into a derived image layer at build time, so the agent's own egress stays
-limited to the provider domain implied by the model id or `api_base`.
+The prompt-token ratio is the quickest fidelity check there is: the same
+history through the same tokenizer should cost the same, so a gap means the
+provider's chat template renders the history differently — dropped reasoning,
+reformatted tool results. Latency and output tokens tell you how long a real
+rollout will take.
 
-`bench.yml` drives `mini-swe-agent` — the same scaffold every leaderboard entry
-used — and reports two rates: **strict** (an errored rollout is a failure, which
-is what you want when the provider is what's under test) and **DeepSWE policy**
-(infrastructure and provider errors dropped, which is how published numbers are
-computed). The key is passed as a `${PROVIDER_API_KEY}` template, so it never
-reaches a command line, a config file, or an artifact.
+**Resume a rollout.** If the provider scores low on a task, resume the
+reference config's passing rollout at a few points. If continuations from
+early on fail but late ones pass, the provider goes wrong somewhere in
+between; narrow it with more points. Run the same resume on
+`openrouter:<model>` (pinned to the original provider) to separate the
+provider from plain run-to-run variance. With `observations=recorded` the
+model is sent exactly the recorded history, so the only difference is who
+answers.
 
-## Baseline runs
+**Resume our own rollout on the reference provider**, pointing `trials=` at
+a trajectory from a previous run's artifact, to ask "would the original
+provider have recovered from here?"
+
+## Adding a provider or model
+
+A provider is a base URL, the secret holding its key, and litellm's prefix for
+it. A model block copies the settings of DeepSWE's published config for that
+model, read off the header of any of its published `agent/mini-swe-agent.txt`
+(`Building agent config from specs: [...]`), and maps the model to each
+provider's id. See `providers.toml`.
+
+Then pick subsets for it:
 
 ```bash
-gh workflow run replay.yml -f n_tasks=12 -f shards=12      # reference replay
-gh workflow run replay.yml -f agent=nop -f n_tasks=12      # empty control
-gh workflow run regrade.yml -f n_trials=10 -f balance=true # rollout regrade
-gh workflow run replay.yml -f n_tasks=0 -f shards=20       # all 113 tasks
+python3 -m dswe.subset kimi-k3 sentinel --n 8
+python3 -m dswe.subset kimi-k3 representative --n 12
 ```
-
-Results land in the job summary and a `report` artifact (`summary.md`,
-`results.json`). Findings from the runs done so far are in
-[`FINDINGS.md`](FINDINGS.md); [`NOTES.md`](NOTES.md) has the practical stuff —
-where DeepSWE's published rollouts and trajectories live, how to replay a
-recorded action without silently grading base state, pier's sharp edges, and
-what a run costs.
-
-## What will bite you
-
-- **Small subsets are noisy, and the seed matters.** Per-task pass rates across
-  published rollouts run from 2.5% (`obsidian-linter-auto-table-of-contents`) to
-  92% (`true-myth-iterable-collection-combinators`). At 12 tasks, the seed alone
-  moves the subset's difficulty by ±8 points — the same size as the provider
-  effect you're looking for. `scripts/pick_subset.py` scores candidate seeds
-  against the published data and names the representative one:
-
-  ```bash
-  python3 scripts/pick_subset.py --tasks-dir deep-swe/tasks --n-tasks 12
-  # most representative: --seed 1 (55.7%, +0.5 vs full)
-  ```
-
-  Then keep that seed fixed, and read the "points easier/harder than average"
-  line in the report.
-- **Grading version matters more than it looks.** DeepSWE v1 scored by exit
-  code, v1.1 by test node id. Re-grading the *same* rollouts moved individual
-  configs by up to 6 points and individual tasks by up to 67, while the pooled
-  rate barely moved. The arXiv paper's numbers are v1; the live leaderboard is
-  v1.1.
-- **The error policy is a choice.** DeepSWE excludes provider errors, timeouts
-  at the infrastructure level, and grading errors, and does not resample them.
-  If you are testing a provider, that policy hides exactly what you are looking
-  for. Read the strict rate.
-- **Subset sampling isn't portable.** pier's `--n-tasks/--sample-seed` shuffles
-  tasks in `Path.iterdir()` order, which is filesystem order, so the same seed
-  can select different tasks on different machines. `scripts/plan.py` sorts
-  first, so `(seed, n_tasks)` names one fixed subset anywhere.
 
 ## Layout
 
 ```
-.github/workflows/replay.yml    oracle/nop: plan -> sharded replay -> report
-.github/workflows/regrade.yml   published rollouts: select -> regrade -> compare
-.github/workflows/bench.yml     a real model through mini-swe-agent -> score
-scripts/plan.py                 deterministic subset selection + sharding
-scripts/select_trials.py        pick published rollouts that have a patch
-scripts/patch_agent.py          pier agent that replays a recorded submission
-scripts/run_shard.sh            one pier job per task, disk reclaimed between
-scripts/run_trials_shard.sh     same, fetching each rollout's patch first
-scripts/run_bench_shard.sh      same, driving mini-swe-agent against a provider
-scripts/collect.py              trial results + verifier logs -> compact JSON
-scripts/aggregate.py            oracle/nop replay -> summary.md
-scripts/aggregate_trials.py     ours vs published, with a confusion matrix
-scripts/aggregate_bench.py      model score vs published, same tasks, with CIs
-scripts/analyze_published.py    recompute the leaderboard from published data
-scripts/pick_subset.py          find a subset seed as hard as the full benchmark
+.github/workflows/run.yml   plan -> sharded pier runs -> report
+providers.toml              providers, and each model's published agent settings
+subsets/                    committed task subsets, with the stats they were picked by
+dswe/plan.py                task selection, resume points, sharding, pier flags per unit
+dswe/agent.py               pier's mini-swe-agent, able to start from a recorded trajectory
+dswe/replay_model.py        runs in the container: replays the prefix, then calls the model
+dswe/atif.py                ATIF trajectory -> the message history mini-swe-agent sent
+dswe/collect.py             one shard's pier output -> records with inference metrics
+dswe/report.py              records -> verdict, owners, inference health, per task
+dswe/probe.py               one step against a provider, no container
+dswe/subset.py              sentinel and representative subsets from published data
+dswe/published.py           DeepSWE's published tables and trajectories, cached
+scripts/run_shard.sh        one pier job per unit, disk reclaimed between
+tests/                      local checks: replay model through the real CLI, collect + report
 ```
 
-Everything is pinned: the benchmark by commit SHA (`deepswe_ref`), the harness
-by version (`pier_version`), the runner by image (`ubuntu-latest`). Tasks
-declare 2 CPUs / 8 GB / 20 GB disk, so a 4-vCPU runner runs one at a time and
-Docker is pruned between tasks — each task pulls its own multi-GB image from
-`public.ecr.aws`.
+Pinned: the benchmark by commit (`DEEPSWE_REF` in `run.yml`), pier by version,
+mini-swe-agent by the version each published config used. [NOTES.md](NOTES.md)
+has the practical details that cost time to find out.
 
 ## Credits
 
 Benchmark and harness are Datacurve's: [deep-swe](https://github.com/datacurve-ai/deep-swe),
 [pier](https://github.com/datacurve-ai/pier), [paper](https://arxiv.org/abs/2607.07946).
+Agent: [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent).

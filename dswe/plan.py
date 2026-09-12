@@ -32,6 +32,7 @@ import argparse
 import json
 import os
 import random
+import subprocess
 import sys
 from dataclasses import asdict
 from fnmatch import fnmatch
@@ -125,6 +126,44 @@ def expand_shorthand(args: argparse.Namespace) -> None:
             sys.exit(f"unknown prefix setting {key!r}; use trials=, pick=, steps=, observations=")
 
 
+def published_source(row: dict[str, Any]) -> dict[str, Any]:
+    return {"trial": row["trial_name"], "traj": published.trajectory(row["trial_name"]), "row": row}
+
+
+def own_rollouts(ref: str, cache: Path) -> list[dict[str, Any]]:
+    """Trajectories from one of our earlier runs: `run:<run id>` or `run:<run id>/<unit>`.
+
+    Downloads that run's shard artifacts with the gh CLI (GH_TOKEN in Actions).
+    """
+    run_id, _, unit = ref.removeprefix("run:").partition("/")
+    dest = cache / run_id
+    if not dest.exists():
+        repo = ["-R", os.environ["GH_REPO"]] if os.environ.get("GH_REPO") else []
+        try:
+            subprocess.run(["gh", "run", "download", run_id, *repo, "-p", "results-shard-*", "-D", str(dest)], check=True)
+        except (OSError, subprocess.CalledProcessError) as e:
+            sys.exit(f"could not download the results of run {run_id}: {e}")
+    sources = []
+    for shard in sorted(dest.rglob("shard-*.json")):
+        for record in json.loads(shard.read_text()).get("records", []):
+            if unit and record["unit"] != unit or not record.get("logs"):
+                continue
+            path = shard.parent / record["logs"] / "trajectory.json"
+            if not path.exists():
+                print(f"note: no trajectory kept for {record['unit']} in run {run_id}", file=sys.stderr)
+                continue
+            rewards = record.get("rewards") or {}
+            sources.append({
+                "trial": record["trial"],
+                "traj": json.loads(path.read_text()),
+                "row": {"task_name": record["task"], "config": f"run {run_id}", "reward": record.get("reward"),
+                        "f2p_passed": rewards.get("f2p_passed"), "f2p_total": rewards.get("f2p_total")},
+            })
+    if not sources:
+        sys.exit(f"no trajectories found for {ref}")
+    return sources
+
+
 def make(args: argparse.Namespace) -> None:
     expand_shorthand(args)
     out_dir = args.out.parent
@@ -136,25 +175,33 @@ def make(args: argparse.Namespace) -> None:
     units: list[dict[str, Any]] = []
     explicit_trials = [t for t in args.prefix_trials.replace(",", " ").split() if t]
     if explicit_trials or args.prefix_pick:
-        rows = published.table("trials")
-        by_name = {r["trial_name"]: r for r in rows}
+        sources: list[dict[str, Any]] = []
         if explicit_trials:
-            unknown = [t for t in explicit_trials if t not in by_name]
-            if unknown:
-                sys.exit(f"not a published rollout: {unknown}")
-            trials, mode = explicit_trials, "prefix(explicit)"
+            own = [t for t in explicit_trials if t.startswith("run:")]
+            for ref in own:
+                sources += own_rollouts(ref, out_dir / "runs")
+            names = [t for t in explicit_trials if not t.startswith("run:")]
+            if names:
+                by_name = {r["trial_name"]: r for r in published.table("trials")}
+                unknown = [t for t in names if t not in by_name]
+                if unknown:
+                    sys.exit(f"not a published rollout: {unknown}")
+                sources += [published_source(by_name[t]) for t in names]
+            mode = "prefix(explicit)"
         else:
             if not reference_config:
                 sys.exit("--prefix-pick needs a profile with a reference_config")
             tasks, mode = select_tasks(args, every)
-            trials = pick_trials(tasks, reference_config, args.prefix_pick, rows)
+            rows = published.table("trials")
+            by_name = {r["trial_name"]: r for r in rows}
+            sources = [published_source(by_name[t]) for t in pick_trials(tasks, reference_config, args.prefix_pick, rows)]
             mode = f"prefix({args.prefix_pick} rollouts of {reference_config} on {mode})"
         (out_dir / "prefixes").mkdir(parents=True, exist_ok=True)
-        for trial in trials:
-            traj = published.trajectory(trial)
+        for source in sources:
+            trial, traj = source["trial"], source["traj"]
             (out_dir / "prefixes" / f"{trial}.json").write_text(json.dumps(traj))
             total = len([s for s in atif.agent_steps(traj) if s.get("tool_calls")])
-            row = by_name[trial]
+            row = source["row"]
             for spec in args.prefix_steps.split(","):
                 steps = resolve_steps(spec, total)
                 if args.agent == "replay" and steps != -1:
