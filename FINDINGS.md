@@ -16,9 +16,12 @@ same 90-minute agent timeout.
 | --- | --- | ---: | --- |
 | [smoke](runs/2026-09-12-crof-glm-5.3-smoke.md) | `ytt-jsonpath-query-api` | 1 of 1 | 0.9 |
 | [sentinel](runs/2026-09-12-crof-glm-5.3-sentinel.md) | 8 tasks the published run always passed | 8 of 8 | 7.3 (normal range 5.8–8.0) |
+| [representative](runs/2026-09-12-crof-glm-5.3-representative.md) | 12 tasks spanning easy to never solved | 8 of 12 | 7.6 (normal range 5.2–10.0) |
 
-The sentinel tasks can only show a provider doing worse, which it didn't.
-They can't show it doing better; the representative subset is for that.
+These are results for crof's `glm-5.3` id. All four failures on the
+representative set finished normally, came within one to four target tests
+of passing, and were on tasks the published run also mostly failed (2, 1, 0
+and 0 of 4).
 
 ### Per call, it behaves like Z.AI
 
@@ -35,23 +38,28 @@ rollouts on the same tasks:
 
 Per rollout, the medians are within a few percent on output tokens (54k vs
 56k), reasoning share, uncached input (118k vs 119k) and largest prompt (114k
-vs 114k), and crof took fewer steps (87 vs 100). For the same history crof's
-tokenizer counts the recorded prompt tokens plus a constant 71, so it renders
-the conversation, including preserved reasoning, the way Z.AI does. No
-retries, no API errors.
+vs 114k), and crof took fewer steps (87 vs 100). No retries, no API errors.
+For the same history crof counts a constant 71 prompt tokens more than Z.AI
+(77 more on each task's first call, where the prompt's host line differs);
+what those tokens are isn't established.
+The representative run looks the same across 1,057 calls: unusable replies
+0.1% vs 0.0%, garbled characters 17.3 vs 16.1 per 100 calls, cache 98.3% vs
+98.1%, median steps 89 vs 90.
 
 ### It is slower, and slower still under load
 
-- Agent time per rollout was 1.73x Z.AI's (median 36 vs 21 minutes). Nearly
-  all of it is waiting on the model.
+- Agent time per rollout was 1.73x Z.AI's on the sentinel run (median 36 vs
+  21 minutes) and 1.61x on the representative run (32 vs 20). Nearly all of
+  it is waiting on the model.
 - Output tokens per second of waiting, time to first token included: 43 with
   one rollout running, 30 with eight rollouts running at once. The same task
   took 31 minutes both times, but its speed went from 43 to 34.
 - Within a rollout, speed falls as context grows: 37 tokens/s in the first
   fifth of steps (typical prompt 24k tokens), 25–30 in the rest (61k–110k),
   even though 98–99% of the input is cached by then.
-- None of the 9 rollouts came near the 90-minute timeout (longest 43 minutes),
-  but a slower task under heavier load could.
+- None of the 21 rollouts timed out. The closest was
+  `helm-array-merge-strategies` at 68 minutes of the 90 allowed, against 34 at
+  Z.AI; a slower task under heavier load could hit the limit.
 
 ### Its usage accounting is off
 

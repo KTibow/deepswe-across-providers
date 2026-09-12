@@ -109,11 +109,14 @@ Compare the rate with the reference, and read the steps where a streak starts.
 
 - OpenAI-compatible chat completions and Responses API at `https://crof.ai/v1`;
   `GET /v1/models` lists ids, quantization and prices.
-- **Preserved reasoning works.** `reasoning_content` sent back in assistant
-  history is used by the model, and for the same history crof's glm-5.3 counts
-  the recorded Z.AI prompt tokens plus a constant 71 (19228 vs 19157, 63521 vs
-  63450, 107143 vs 107072). A provider that dropped reasoning from the history
-  would come in thousands of tokens short.
+- **Preserved reasoning reaches the model.** `reasoning_content` sent back in
+  assistant history is used: the model recalled a number that only appeared in
+  its earlier reasoning. For the same history crof's glm-5.3 counts the
+  recorded Z.AI prompt tokens plus a constant 71 (19228 vs 19157, 63521 vs
+  63450, 107143 vs 107072), and 77 more on the first call of every task in
+  our runs, where the prompt's host-kernel line differs. A provider that
+  dropped reasoning would come in thousands of tokens short. What the constant
+  extra tokens are isn't established.
 - **Prefix caching works** across calls with a shared prefix.
 - **Speed**, glm-5.3 at `reasoning_effort=max`, 2026-09-12. A single probe: a
   4.5k-token reply took 152 s, ~7.7 s to first token, ~31 tokens/s; short
