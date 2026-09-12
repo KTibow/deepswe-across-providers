@@ -137,9 +137,11 @@ Compare the rate with the reference, and read the steps where a streak starts.
   - `usage.reasoning_tokens` sits at the top level (not in
     `completion_tokens_details`). It ran 0.77x–1.10x of the reasoning actually
     returned, so it can exceed `completion_tokens` when the rest of the reply
-    is tiny (e.g. one short tool call): 4,911 vs 4,563, 1,002 vs 1,001. A
-    ~320-token prompt reproduces it, streamed or not, with or without tools;
-    see `repros/crof-reasoning-tokens.sh`.
+    is tiny (e.g. one short tool call): 4,911 vs 4,563, 1,002 vs 1,001. One
+    non-streamed curl reproduces it reliably: ask the model to think something
+    through but reply with one word, and reasoning_tokens comes back 3–7%
+    above completion_tokens (6 of 6 tries). The command is at the top of
+    `repros/crof-reasoning-tokens.sh`.
   - Whether it's there at all depends on the path. The presence of a `tools`
     key (even `tools: []`) picks the path. Non-streamed with tools: no
     reasoning count. Non-streamed without tools: `gen-…` ids and a count.

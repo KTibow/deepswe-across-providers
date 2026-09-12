@@ -11,6 +11,15 @@
 #
 #   CROF_KEY=... bash repros/crof-reasoning-tokens.sh
 #
+# The shortest version, which crossed in 6 of 6 tries on 2026-09-12: ask for
+# reasoning but a one-word answer, so almost the whole output is reasoning.
+#
+#   curl -s https://crof.ai/v1/chat/completions -H "Authorization: Bearer $CROF_KEY" \
+#     -H 'Content-Type: application/json' \
+#     -d '{"model":"glm-5.3","messages":[{"role":"user","content":"Think through five grep strategies for finding where a Go program adds an \"ERROR: \" prefix, and their false positives. Do not write them out: reply with only the word ls"}]}' \
+#     | jq -c '{content: .choices[0].message.content, completion_tokens: .usage.completion_tokens, reasoning_tokens: .usage.reasoning_tokens}'
+#   # {"content":"ls","completion_tokens":679,"reasoning_tokens":723}
+#
 # Found 2026-09-12; see NOTES.md, "crof.ai".
 set -euo pipefail
 KEY=${CROF_KEY:-$(tr -d '\n' < /tmp/crof-key.txt)}
