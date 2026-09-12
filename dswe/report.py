@@ -200,10 +200,11 @@ def reasoning_of(call: dict[str, Any]) -> float:
 
     The estimate splits output tokens by the reasoning's share of the reply's
     characters. On published glm-5.3 trajectories, which report both, it lands
-    within 1-2 points of the exact share.
+    within 1-2 points of the exact share. A reported count is capped at the
+    call's output: crof has reported more reasoning than total output.
     """
     if call.get("reasoning_tokens"):
-        return call["reasoning_tokens"]
+        return min(call["reasoning_tokens"], call.get("output_tokens") or call["reasoning_tokens"])
     chars = (call.get("reasoning_chars") or 0) + (call.get("text_chars") or 0)
     return (call.get("output_tokens") or 0) * (call.get("reasoning_chars") or 0) / chars if chars else 0.0
 

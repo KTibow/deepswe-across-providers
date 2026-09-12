@@ -130,9 +130,15 @@ Compare the rate with the reference, and read the steps where a streak starts.
   this is serving long contexts, not re-reading them. Output length explains
   nearly all of the wait (about 4 s plus 18 s per 1,000 output tokens fits 97%
   of it); how much input wasn't cached made no measurable difference.
-- **Reasoning tokens aren't reported** on non-streamed calls (they are when
-  streaming). The report estimates them from the reasoning's share of each
-  reply's characters; on 12 published glm-5.3 trajectories, which report
+- **Reasoning tokens depend on which response path crof uses.** Checked
+  2026-09-12 with glm-5.3: a request without tools comes back with a `gen-…`
+  id and reports `usage.reasoning_tokens` at the top level (not in the
+  standard `completion_tokens_details`); a request with a tool comes back as
+  `chatcmpl-…` and reports no reasoning count at all. Streamed with a tool it
+  reported one, but it was impossible: 4,911 reasoning of 4,563 output tokens.
+  mini-swe-agent always sends its bash tool, so in runs crof never reports
+  reasoning tokens. The report estimates them from the reasoning's share of
+  each reply's characters; on 12 published glm-5.3 trajectories, which report
   both, that estimate was 61.9% against an exact 60.5%.
 - **Behaviour per call matched Z.AI** on that rollout: no retries, no format
   errors, 26.1 vs 23.3 garbled characters per 100 calls, typical output 262
