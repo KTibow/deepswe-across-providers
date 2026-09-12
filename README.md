@@ -82,7 +82,10 @@ gh workflow run replay.yml -f n_tasks=0 -f shards=20       # all 113 tasks
 
 Results land in the job summary and a `report` artifact (`summary.md`,
 `results.json`). Findings from the runs done so far are in
-[`FINDINGS.md`](FINDINGS.md).
+[`FINDINGS.md`](FINDINGS.md); [`NOTES.md`](NOTES.md) has the practical stuff —
+where DeepSWE's published rollouts and trajectories live, how to replay a
+recorded action without silently grading base state, pier's sharp edges, and
+what a run costs.
 
 ## What will bite you
 
