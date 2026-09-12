@@ -58,6 +58,20 @@ def main() -> None:
         if not ok:
             failures.append(name)
 
+    sys.path.insert(0, str(REPO))
+    from dswe.collect import repeat_stats
+
+    fetch = 'curl -sL "https://example.com/logs.md" -o /tmp/logs{n}.md && grep -i log /tmp/logs{n}.md | head -30'
+    thought = "The logs.md URL is returning a 404 page. Let me search the docs for logs."
+    loop = repeat_stats([(fetch.format(n=n), thought) for n in (4, 5, 6, 7, 8, 9)])
+    check("repeats: incrementing filenames with the same reasoning are a loop",
+          loop == {"steps": 6, "repeated": 5, "longest_streak": 5, "streak_starts_at": 1}, loop)
+    paging = repeat_stats([(f"nl -ba f.go | sed -n '{a},{a + 80}p'", f"Reading part {k} of f.go: {w}")
+                           for k, (a, w) in enumerate([(1, "imports"), (81, "the parser"), (161, "error paths")])])
+    check("repeats: paging through a file is not", paging["repeated"] == 0, paging)
+    retest = repeat_stats([("go test ./...", "run"), ("sed -i s/a/b/ x.go", "fix"), ("go test ./...", "again")])
+    check("repeats: an identical rerun counts once", retest["repeated"] == 1 and retest["longest_streak"] == 1, retest)
+
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         jobs = root / "jobs"
@@ -98,6 +112,8 @@ def main() -> None:
         check("collect: C1 characters counted", inf["c1_chars"] == 2, inf["c1_chars"])
         check("collect: finish reasons", inf["finish_reasons"] == {"tool_calls": 3, "stop": 1}, inf["finish_reasons"])
         check("collect: missing unit becomes harness-failure", recs["never-ran"]["state"] == "harness-failure")
+        check("collect: repeats of recent commands", recs[solved_task]["agent"]["repeats"] ==
+              {"steps": 3, "repeated": 2, "longest_streak": 2, "streak_starts_at": 1}, recs[solved_task]["agent"]["repeats"])
         check("collect: trajectory kept", (root / "shards" / "results-shard-0" / "results" / recs[solved_task]["logs"] / "trajectory.json").exists())
 
         plan = {
@@ -123,6 +139,8 @@ def main() -> None:
         check("report: retries surfaced", "`ServiceUnavailableError` 9" in summary and "`RateLimitError` 1" in summary)
         check("report: format errors surfaced", "| format-error replies | 1 of 5 (20.0%) |" in summary)
         check("report: reference per-call column filled", "reference (8 published rollouts)" in summary)
+        check("report: repeat rows", "| steps repeating a recent step (numbers ignored) | 50.0% |" in summary
+              and "| rollouts with a repeat streak of 5+ steps | 0 of 2 (longest 2) |" in summary)
         check("report: per-task marks", f"| `{solved_task}` | `P` |" in summary and f"| `{failed_task}` | `X` |" in summary)
         if failures:
             print(summary)

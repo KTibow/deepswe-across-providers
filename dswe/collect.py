@@ -94,6 +94,59 @@ def call_metrics(response: Any) -> dict[str, Any]:
     }
 
 
+NUMBERS = re.compile(r"\d+")
+
+
+def _loose(text: str) -> str:
+    return " ".join(NUMBERS.sub("#", text).split())
+
+
+def repeat_stats(steps: list[tuple[str, str]], window: int = 5) -> dict[str, Any]:
+    """How much an agent repeats itself: the signature of a doom loop.
+
+    ``steps`` is (commands, assistant text + reasoning) per step. A step counts
+    as repeated when, against one of the previous ``window`` steps, its
+    commands match with numbers ignored — loops often bump a counter, like
+    ``curl ... -o /tmp/logs4.md`` then ``logs5.md`` — and either the commands
+    match exactly or the text does (numbers ignored too). Requiring the second
+    match keeps paging through a file (``sed -n 1,80p`` then ``80,160p``) from
+    counting. The longest streak's start is the step to probe.
+    """
+    flags = []
+    for i, (command, text) in enumerate(steps):
+        repeated = False
+        for prev_command, prev_text in steps[max(0, i - window):i]:
+            if command and _loose(command) == _loose(prev_command) and (
+                command == prev_command or (text.strip() and _loose(text) == _loose(prev_text))
+            ):
+                repeated = True
+                break
+        flags.append(repeated)
+    longest, starts_at, run, run_start = 0, None, 0, 0
+    for i, repeated in enumerate(flags):
+        run = run + 1 if repeated else 0
+        if run == 1:
+            run_start = i
+        if run > longest:
+            longest, starts_at = run, run_start
+    return {"steps": len(steps), "repeated": sum(flags), "longest_streak": longest, "streak_starts_at": starts_at}
+
+
+def step_commands(message: dict[str, Any]) -> str:
+    """The commands one assistant step ran, joined."""
+    extra = message.get("extra") or {}
+    if extra.get("actions"):
+        return "\n".join(str(a.get("command", "")) for a in extra["actions"])
+    calls = message.get("tool_calls") or ((((extra.get("response") or {}).get("choices") or [{}])[0].get("message") or {}).get("tool_calls")) or []
+    out = []
+    for call in calls:
+        try:
+            out.append(str(json.loads((call.get("function") or {}).get("arguments") or "{}").get("command", "")))
+        except (json.JSONDecodeError, AttributeError):
+            out.append(str((call.get("function") or {}).get("arguments")))
+    return "\n".join(out)
+
+
 def agent_summary(agent_dir: Path) -> dict[str, Any]:
     """What the agent did and how its model calls went.
 
@@ -112,9 +165,11 @@ def agent_summary(agent_dir: Path) -> dict[str, Any]:
     last_ts: float | None = None
     after_format_error = False
     replayed = 0
+    commands: list[tuple[str, str]] = []
     for message in data.get("messages") or []:
         extra = message.get("extra") or {}
         if message.get("role") == "assistant":
+            commands.append((step_commands(message), (message.get("content") or "") + (message.get("reasoning_content") or "")))
             if "replayed_step" in extra:
                 replayed += 1
             else:
@@ -146,6 +201,7 @@ def agent_summary(agent_dir: Path) -> dict[str, Any]:
         "steps": replayed + sum(1 for c in calls if not c.get("format_error")),
         "replayed_steps": replayed,
         "replay": info.get("replay"),
+        "repeats": repeat_stats(commands),
         "inference": {
             "calls": len(calls),
             "format_errors": sum(1 for c in calls if c.get("format_error")),

@@ -18,7 +18,8 @@ submissions fail, and our grader agrees with Datacurve's. That work is in
 ## Running
 
 Everything is one workflow, `run.yml`. Provider keys are repository secrets
-named in `providers.toml` (`CROF_KEY`, `OPENROUTER_KEY`).
+named in `providers.toml`. `CROF_KEY` is set; `OPENROUTER_KEY` deliberately
+isn't yet (see [Debugging a provider](#debugging-a-provider)).
 
 ```bash
 # glm-5.3 on crof, on the 8 tasks the published glm-5.3 config always solved
@@ -32,7 +33,7 @@ gh workflow run run.yml -f agent=crof:glm-5.3 -f tasks=subset:glm-5.3-representa
 gh workflow run run.yml -f agent=crof:glm-5.3 -f tasks=subset:glm-5.3-sentinel -f "prefix=pick=pass steps=50%"
 
 # resume one rollout at several points (published, or one of ours)
-gh workflow run run.yml -f agent=openrouter:glm-5.3 \
+gh workflow run run.yml -f agent=crof:glm-5.3 \
   -f "prefix=trials=ytt-jsonpath-query-api__DjxtPgs steps=25%,50%,75%"
 
 # replay published rollouts end to end with no model: should grade as published
@@ -96,18 +97,22 @@ provider's chat template renders the history differently — dropped reasoning,
 reformatted tool results. Latency and output tokens tell you how long a real
 rollout will take.
 
-**Resume a rollout.** If the provider scores low on a task, resume the
-reference config's passing rollout at a few points. If continuations from
-early on fail but late ones pass, the provider goes wrong somewhere in
-between; narrow it with more points. Run the same resume on
-`openrouter:<model>` (pinned to the original provider) to separate the
-provider from plain run-to-run variance. With `observations=recorded` the
-model is sent exactly the recorded history, so the only difference is who
-answers.
+**Resume a rollout on the provider under test.** If the provider scores low on
+a task, resume the reference config's passing rollout at a few points. If
+continuations from early on fail but late ones pass, the provider goes wrong
+somewhere in between; narrow it with more points. With
+`observations=recorded` the model is sent exactly the recorded history, so the
+only difference from the recording is who answers.
 
-**Resume our own rollout on the reference provider**, pointing `trials=` at
-a trajectory from a previous run's artifact, to ask "would the original
-provider have recovered from here?"
+**Ask the reference provider last, and one call at a time.** Some questions
+only the original provider can answer — would it have looped here too? — and
+that costs money where crof doesn't. So find the step first: the report flags
+rollouts that keep repeating recent commands and says where the streak
+starts. Probe that single step on `openrouter:<model>` (pinned to the
+original provider) before considering a resumed session there. A full resume
+(`prefix=trials=run:<id>/<unit> steps=K` with an OpenRouter agent) replays
+every later call and is the expensive last resort. `OPENROUTER_KEY` gets added
+once crof results show a specific case that needs it.
 
 ## Adding a provider or model
 

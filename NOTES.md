@@ -90,6 +90,21 @@ Building agent config from specs: ['mini.yaml', 'agent.cost_limit=0',
 - The litellm response (usage, finish reason) is saved on every assistant
   message under `extra.response`.
 
+## Spotting loops
+
+Loops often bump a number each turn (`-o /tmp/logs4.md`, then `logs5.md`)
+while repeating the same reasoning word for word, so exact matching misses
+them. The collector counts a step as a repeat when its commands match one of
+the previous five steps' with numbers ignored, and either the commands match
+exactly or the text does (numbers ignored). The second condition keeps paging
+through a file (`sed -n 1,80p`, `80,160p`) from counting.
+
+Calibration on 30 published glm-5.3 rollouts at Z.AI: 0.8% of steps are
+repeats; 26 rollouts have none; one has a 5-step streak, and that one was
+legitimately polling a background eslint run (`sleep 29; cat /tmp/lint.log;
+pgrep -f eslint`) and passed. So one 5-step streak isn't a loop by itself.
+Compare the rate with the reference, and read the steps where a streak starts.
+
 ## crof.ai
 
 - OpenAI-compatible chat completions and Responses API at `https://crof.ai/v1`;

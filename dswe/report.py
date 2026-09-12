@@ -33,7 +33,10 @@ from pathlib import Path
 from typing import Any
 
 from dswe import atif, published
-from dswe.collect import C1
+from dswe.collect import C1, repeat_stats
+
+# A streak this long of steps repeating recent commands is called out as a loop.
+LOOP_STREAK = 5
 
 PRIOR = 2.0
 INFRASTRUCTURE = {
@@ -122,7 +125,7 @@ def reference_stats(config: str | None, tasks: list[str]) -> tuple[dict[str, dic
 def reference_calls(ref_rows: list[dict[str, Any]]) -> dict[str, Any]:
     """The per-call numbers ATIF keeps, from the reference config's published trajectories."""
     out: dict[str, Any] = {"rollouts": 0, "calls": 0, "format_errors": 0, "c1_chars": 0,
-                           "output_tokens": [], "prompt_tokens": [], "cached_tokens": []}
+                           "output_tokens": [], "prompt_tokens": [], "cached_tokens": [], "repeats": []}
     for row in ref_rows:
         if not row.get("has_trajectory"):
             continue
@@ -131,6 +134,10 @@ def reference_calls(ref_rows: list[dict[str, Any]]) -> dict[str, Any]:
         except SystemExit:
             continue
         out["rollouts"] += 1
+        out["repeats"].append(repeat_stats([
+            ("\n".join(a["command"] for a in atif.actions(step)), (step.get("message") or "") + (step.get("reasoning_content") or ""))
+            for step in atif.agent_steps(traj)
+        ]))
         for step in atif.agent_steps(traj):
             _, followups = atif.observation_contents(step)
             # Each format-error prompt followed a call ATIF doesn't keep.
@@ -144,6 +151,18 @@ def reference_calls(ref_rows: list[dict[str, Any]]) -> dict[str, Any]:
                 if isinstance(metrics.get(source), (int, float)):
                     out[key].append(metrics[source])
     return out
+
+
+def repeat_share(stats: list[dict[str, Any]]) -> str:
+    steps = sum(s["steps"] for s in stats)
+    return pct(sum(s["repeated"] for s in stats), steps) if steps else "-"
+
+
+def loop_count(stats: list[dict[str, Any]]) -> str:
+    if not stats:
+        return "-"
+    loops = sum(1 for s in stats if s["longest_streak"] >= LOOP_STREAK)
+    return f"{loops} of {len(stats)} (longest {max(s['longest_streak'] for s in stats)})"
 
 
 def verdict_lines(records: list[dict], owners: list[str], expected: dict[str, dict], config: str | None) -> tuple[list[str], dict]:
@@ -198,6 +217,8 @@ def inference_lines(records: list[dict], ref_rows: list[dict]) -> tuple[list[str
         "empty_replies": sum(i["empty_replies"] for i in inf),
         "retries": dict(retries),
         "finish_reasons": dict(finish),
+        "repeats": [(r.get("agent") or {}).get("repeats") for r in records
+                    if (r.get("agent") or {}).get("inference", {}).get("calls") and (r.get("agent") or {}).get("repeats")],
         **pool,
     }
     ref_tasks = {r["task"] for r in records if (r.get("agent") or {}).get("inference", {}).get("calls")}
@@ -219,6 +240,8 @@ def inference_lines(records: list[dict], ref_rows: list[dict]) -> tuple[list[str
             "output tokens, p50 / p90": f"{fmt(quantile(side['output_tokens'], 0.5))} / {fmt(quantile(side['output_tokens'], 0.9))}",
             "prompt tokens, p50 / max": f"{fmt(quantile(side['prompt_tokens'], 0.5))} / {fmt(max(side['prompt_tokens']) if side['prompt_tokens'] else None)}",
             "prompt served from cache": pct(cached_share, 1) if cached_share is not None else "-",
+            "steps repeating a recent step (numbers ignored)": repeat_share(side["repeats"]),
+            f"rollouts with a repeat streak of {LOOP_STREAK}+ steps": loop_count(side["repeats"]),
         }
 
     mine, theirs = per_call(ours), per_call(ref)
@@ -228,7 +251,9 @@ def inference_lines(records: list[dict], ref_rows: list[dict]) -> tuple[list[str
         lines.append(f"| {key} | {value} | {theirs.get(key, '-')} |")
     lines.append(f"| wait per call, p50 / p90 / max | {fmt(quantile(pool['latency_s'], 0.5), 's', 1)} / "
                  f"{fmt(quantile(pool['latency_s'], 0.9), 's', 1)} / {fmt(max(pool['latency_s']) if pool['latency_s'] else None, 's')} | not published |")
-    lines += ["", "glm-5.3 writes some mis-decoded UTF-8 even at Z.AI, so compare the rate, not the count.", ""]
+    lines += ["", "glm-5.3 writes some mis-decoded UTF-8 even at Z.AI, so compare the rate, not the count. "
+              "A repeat streak can also be an agent polling a background job (`sleep 30; cat log`); "
+              "the non-passing list below names where each streak starts, which is the step to probe.", ""]
 
     live = [r for r in records if (r.get("agent") or {}).get("inference", {}).get("calls") and not (r.get("agent") or {}).get("replayed_steps")]
     if live and ref_rows:
@@ -407,6 +432,9 @@ def main() -> None:
             rw = r.get("rewards") or {}
             if rw.get("f2p_total") is not None:
                 head += f" (f2p {rw.get('f2p_passed')}/{rw.get('f2p_total')}, p2p {rw.get('p2p_passed')}/{rw.get('p2p_total')})"
+            rep = ag.get("repeats") or {}
+            if rep.get("longest_streak", 0) >= LOOP_STREAK:
+                head += f"; **repeat streak of {rep['longest_streak']} steps from step {rep['streak_starts_at']}**"
             if r.get("logs"):
                 head += f" — `results-shard-{r['shard']}/{r['logs']}`"
             lines.append(head)
