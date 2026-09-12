@@ -96,9 +96,33 @@ identical runner image:
 | a published rollout's `model.patch` (claude-sonnet-5) | **2** | **8** |
 | the task's reference solution | **10** | 0 |
 
-The reference is stable, so the test is not simply broken — but the same
-submission scores 1 or 0 depending on thread scheduling, which makes that
-rollout's published verdict a sample rather than a measurement.
+The reference is stable because it never races. It dedups the input list
+synchronously before dispatching:
+
+```python
+keys = [_make_coalesce_key(inp) for inp in inputs]
+unique_inputs = [inputs[i] for i in unique_indices]   # ["hello", "world"]
+unique_results = self.bound.batch(unique_inputs, ...)  # exactly 2 calls
+```
+
+`call_count == 2` is then true by construction. The rollout's implementation
+instead delegates to `Runnable.batch`, which runs `self.invoke` per item
+concurrently, so the two `"hello"` items coalesce only if the second reaches the
+in-flight registry before the first completes — a race, and the submission's own
+comment says so:
+
+```python
+# `Runnable.batch` runs `self.invoke` (our coalescing-aware override)
+# per item, concurrently, while preserving positional order.
+return Runnable.batch(self, inputs, config, ...)
+```
+
+The prompt's requirement is unconditional — *"Batch methods coalesce per-item
+and preserve positional order"* — so the rollout does not reliably meet the
+spec, and grading it 0 is correct. The defect in the test cuts the other way:
+without the barrier, a non-compliant implementation passes about 1 run in 5.
+Adding the barrier its siblings use would make the check deterministic and
+stricter, not more lenient.
 
 The test that moves is benchmark-authored (it comes from the task's own
 `tests/test.patch`, not upstream langchain) and it is on the fail-to-pass
