@@ -122,6 +122,7 @@ def main() -> None:
         replay = info.get("replay") or {}
         check("partial: replay summary", replay.get("steps_replayed") == 2 and replay.get("steps_with_different_output") == [0, 1], replay)
         check("partial: prompt mismatch detected", replay.get("prompt_matches_recording") is False, replay)
+        check("partial: differences labelled", replay.get("differences") == {"content": [0, 1]}, replay.get("differences"))
         check("partial: handoff logged", "[replay] handing off" in result["stdout"], result["stdout"][-500:])
 
     # Live observations: history holds what our commands printed.

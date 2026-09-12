@@ -130,6 +130,14 @@ print that depends on time, paths or scheduling. With
 `observations=recorded` the model is sent the recorded output regardless;
 with `live`, what our run printed.
 
+What "different" looks like in practice: replaying a published glm-5.3
+rollout of `ytt-jsonpath-query-api` on a GitHub runner, 20 of 60 steps printed
+something other than the recording, and it still graded 103/103 exactly as
+published. The differences were `ls -la` sizes and dates (Modal's filesystem
+vs the runner's), `find` listing files in another order, and Go test timings
+(`0.003s` vs `0.002s`). The replay labels each difference as `numbers`,
+`order` or `content`; only `content` is worth reading.
+
 ATIF keeps enough to rebuild the exact message history: agent steps carry
 text, reasoning and tool calls, and each observation holds one result per tool
 call followed by any format-error prompt sent before the next step.

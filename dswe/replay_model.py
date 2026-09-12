@@ -25,6 +25,7 @@ recording, and a summary is saved in the trajectory under ``info.replay``.
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -32,6 +33,18 @@ from typing import Any, Literal
 from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
 
 from dswe import atif
+
+
+def difference_kind(ours: str, recorded: str) -> str:
+    """How a replayed command's output differs from the recording's."""
+    # Pointer addresses (0xc000123abc) and git hashes change run to run too.
+    digits = re.compile(r"0x[0-9a-fA-F]+|\b[0-9a-f]{7,40}\b|\d+")
+    a, b = digits.sub("#", ours), digits.sub("#", recorded)
+    if a == b:
+        return "numbers"
+    if sorted(a.replace("\\n", "\n").splitlines()) == sorted(b.replace("\\n", "\n").splitlines()):
+        return "order"
+    return "content"
 
 
 class ReplayModelConfig(LitellmModelConfig):
@@ -52,6 +65,7 @@ class ReplayModel(LitellmModel):
         self._prefix = steps[:n]
         self._served = 0
         self._mismatched: list[int] = []
+        self._kinds: dict[str, list[int]] = {}
         self._prompt_checked = False
         self._prompt_matches: bool | None = None
         print(f"[replay] replaying {n} of {len(steps)} recorded steps, observations={self.config.replay_observations}", flush=True)
@@ -99,6 +113,10 @@ class ReplayModel(LitellmModel):
             matches = msg["content"] == rec
             mismatch = mismatch or not matches
             msg["extra"]["replay"] = {"step": index, "matches_recording": matches}
+            if not matches:
+                kind = difference_kind(msg["content"], rec)
+                msg["extra"]["replay"]["difference"] = kind
+                self._kinds.setdefault(kind, []).append(index)
             if self.config.replay_observations == "recorded":
                 if not matches:
                     msg["extra"]["replay"]["live_content"] = msg["content"]
@@ -122,5 +140,8 @@ class ReplayModel(LitellmModel):
             "observations": self.config.replay_observations,
             "prompt_matches_recording": self._prompt_matches,
             "steps_with_different_output": self._mismatched,
+            # step indices by kind: "numbers" (timings, sizes, dates' digits),
+            # "order" (same lines, e.g. find over a different filesystem), "content"
+            "differences": {kind: sorted(set(steps)) for kind, steps in self._kinds.items()},
         }
         return data

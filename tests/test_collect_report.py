@@ -31,7 +31,7 @@ def response(prompt: int, output: int, cached: int, finish: str = "tool_calls", 
 
 
 def write_trial(jobs: Path, unit: str, task: str, reward: float | None, messages: list[dict], exit_status: str,
-                log: str, exception: dict | None = None) -> None:
+                log: str, exception: dict | None = None, replay: dict | None = None) -> None:
     trial = jobs / unit / f"{task[:32]}__abc"
     (trial / "agent").mkdir(parents=True)
     (trial / "verifier").mkdir()
@@ -45,7 +45,7 @@ def write_trial(jobs: Path, unit: str, task: str, reward: float | None, messages
         result["verifier_result"] = {"rewards": {"reward": reward, "f2p_passed": 3, "f2p_total": 4, "p2p_passed": 9, "p2p_total": 9}}
     (trial / "result.json").write_text(json.dumps(result))
     (trial / "agent" / "mini-swe-agent.trajectory.json").write_text(json.dumps(
-        {"info": {"exit_status": exit_status, "mini_version": "2.4.2"}, "messages": messages}))
+        {"info": {"exit_status": exit_status, "mini_version": "2.4.2", "replay": replay}, "messages": messages}))
     (trial / "agent" / "mini-swe-agent.txt").write_text(log)
     (trial / "agent" / "trajectory.json").write_text("{}")
 
@@ -75,7 +75,9 @@ def main() -> None:
             {"role": "exit", "content": "", "extra": {"exit_status": "Submitted"}},
         ]
         write_trial(jobs, solved_task, solved_task, 1.0, solved, "Submitted",
-                    "Retrying <unknown> in 4 seconds as it raised RateLimitError: slow down\n")
+                    "Retrying <unknown> in 4 seconds as it raised RateLimitError: slow down\n",
+                    replay={"steps_replayed": 3, "steps_requested": 3, "prompt_matches_recording": False,
+                            "steps_with_different_output": [1], "differences": {"numbers": [1]}})
         died = solved[:4] + [{"role": "exit", "content": "boom", "extra": {"exit_status": "ServiceUnavailableError"}}]
         write_trial(jobs, failed_task, failed_task, 0.0, died, "ServiceUnavailableError",
                     "Retrying <unknown> in 4 seconds as it raised ServiceUnavailableError: x\n" * 9)
@@ -124,6 +126,31 @@ def main() -> None:
         check("report: per-task marks", f"| `{solved_task}` | `P` |" in summary and f"| `{failed_task}` | `X` |" in summary)
         if failures:
             print(summary)
+
+        # The same records read as resumed rollouts: one full replay of a passing
+        # recording (solved), one of a failing recording (provider, so not a fidelity data point).
+        def prefix(reward: float, f2p: list[int]) -> dict:
+            return {"trial": "t", "path": "prefixes/t.json", "steps": -1, "total_steps": 3, "observations": "recorded",
+                    "recorded_config": "cfg", "recorded_reward": reward, "recorded_f2p": f2p}
+        plan["units"] = [
+            {"id": solved_task, "task": solved_task, "attempts": 1, "prefix": prefix(1.0, [3, 4])},
+            {"id": failed_task, "task": failed_task, "attempts": 1, "prefix": prefix(0.0, [0, 4])},
+            {"id": "never-ran", "task": "never-ran", "attempts": 1, "prefix": None},
+        ]
+        plan["selection"] = "prefix(explicit)"
+        (root / "plan.json").write_text(json.dumps(plan))
+        (root / "meta.json").write_text(json.dumps({"agent": "crof:glm-5.3", "tasks": "subset:ignored"}))
+        out = subprocess.run([sys.executable, "-m", "dswe.report", "--plan", str(root / "plan.json"), "--meta", str(root / "meta.json"),
+                              "--results-dir", str(root / "shards"), "--out", str(root / "report2")],
+                             cwd=REPO, capture_output=True, text=True)
+        check("prefix report: exits 0", out.returncode == 0, out.stderr[-2000:])
+        resumed = (root / "report2" / "summary.md").read_text() if out.returncode == 0 else ""
+        check("prefix report: recorded and our f2p side by side", f"| `{solved_task}` | pass 3/4 (cfg) | end | solved | 3/4 |" in resumed)
+        check("prefix report: fidelity counts graded full replays", "graded the same as the recorded rollout: **1/1**" in resumed)
+        check("prefix report: difference kinds shown", "(numbers 1)" in resumed)
+        check("prefix report: ignored task input dropped from settings", "subset:ignored" not in resumed)
+        if failures:
+            print(resumed)
 
     if failures:
         sys.exit(f"{len(failures)} check(s) failed")

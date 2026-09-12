@@ -276,6 +276,9 @@ def main() -> None:
     expected, ref_rows = reference_stats(config, plan["tasks"])
 
     lines = [f"# `{agent}` — {plan['selection']}", ""]
+    if plan["selection"] == "prefix(explicit)":
+        # Named rollouts decide the tasks; the workflow's task input was ignored.
+        meta.pop("tasks", None)
     if meta:
         lines += ["| setting | value |", "| --- | --- |"] + [f"| {k} | `{v}` |" for k, v in meta.items() if v not in ("", None)] + [""]
     missing = sorted(set(units) - {r["unit"] for r in records})
@@ -340,7 +343,8 @@ def main() -> None:
 
     if has_prefix:
         lines += ["## Resumed rollouts", "",
-                  "| unit | recorded result | resumed at | ours | live steps | exit |", "| --- | --- | ---: | --- | ---: | --- |"]
+                  "| unit | recorded result | resumed at | ours | f2p ours | live steps | exit |",
+                  "| --- | --- | ---: | --- | ---: | ---: | --- |"]
         buckets: dict[str, list[str]] = collections.defaultdict(list)
         fidelity = []
         for r, o in zip(records, owners):
@@ -352,11 +356,16 @@ def main() -> None:
             buckets[bucket].append(o)
             rec = prefix.get("recorded_reward")
             rec_text = "?" if rec is None else ("pass" if float(rec) >= 1 else "fail")
+            rec_f2p = prefix.get("recorded_f2p") or [None, None]
+            if rec_f2p[1] is not None:
+                rec_text += f" {rec_f2p[0]}/{rec_f2p[1]}"
+            rw = r.get("rewards") or {}
+            ours_f2p = f"{rw.get('f2p_passed')}/{rw.get('f2p_total')}" if rw.get("f2p_total") is not None else "-"
             ag = r.get("agent") or {}
             lines.append(f"| `{r['unit']}` | {rec_text} ({prefix.get('recorded_config')}) | {'end' if steps == -1 else f'{steps}/{total}'} | "
-                         f"{o} | {(ag.get('steps') or 0) - (ag.get('replayed_steps') or 0)} | {ag.get('exit_status') or '-'} |")
+                         f"{o} | {ours_f2p} | {(ag.get('steps') or 0) - (ag.get('replayed_steps') or 0)} | {ag.get('exit_status') or '-'} |")
             if steps == -1 and rec is not None and o in ("solved", "model"):
-                fidelity.append((rec_text == "pass") == (o == "solved"))
+                fidelity.append((float(rec) >= 1) == (o == "solved"))
         lines += ["", "| resumed at | solved | of |", "| --- | ---: | ---: |"]
         for bucket in sorted(buckets, key=lambda b: (b == "full replay", float(b.rstrip("%")) if b != "full replay" else 0)):
             outs = [o for o in buckets[bucket] if o not in EXCLUDED]
@@ -372,7 +381,11 @@ def main() -> None:
                          " (timestamps, temp paths and test timings make some of this normal; look at the first differing step)")
             for u, rp in diverged[:20]:
                 diff = rp["steps_with_different_output"]
-                lines.append(f"  - `{u}`: {len(diff)} of {rp['steps_replayed']} steps, first at step {diff[0]}")
+                kinds = rp.get("differences") or {}
+                detail = ", ".join(f"{kind} {len(steps)}" for kind, steps in sorted(kinds.items()))
+                first_content = f"; first content difference at step {kinds['content'][0]}" if kinds.get("content") else ""
+                lines.append(f"  - `{u}`: {len(diff)} of {rp['steps_replayed']} steps"
+                             + (f" ({detail}){first_content}" if detail else f", first at step {diff[0]}"))
             prompt_diff = sum(1 for _, rp in replays if rp.get("prompt_matches_recording") is False)
             if prompt_diff:
                 lines.append(f"- {prompt_diff} replay(s) rendered a different prompt from the recording (usually only the "
