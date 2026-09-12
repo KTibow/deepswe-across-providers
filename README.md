@@ -53,6 +53,17 @@ gh workflow run bench.yml -f model=... -f n_tasks=20 -f seed=0 \
   -f reference_configs="mini_swe_agent_claude_opus_5_high"
 ```
 
+Smoke it with one task before spending anything:
+
+```bash
+gh workflow run bench.yml -f model="openrouter/..." -f tasks="igel-persist-feature-schema"
+```
+
+`mini-swe-agent`'s own knobs go through `agent_kwargs`, space separated —
+`reasoning_effort=high`, `cost_limit=5`, `model_class=...`. pier installs the
+agent into a derived image layer at build time, so the agent's own egress stays
+limited to the provider domain implied by the model id or `api_base`.
+
 `bench.yml` drives `mini-swe-agent` — the same scaffold every leaderboard entry
 used — and reports two rates: **strict** (an errored rollout is a failure, which
 is what you want when the provider is what's under test) and **DeepSWE policy**
