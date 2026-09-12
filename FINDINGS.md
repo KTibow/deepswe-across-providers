@@ -117,12 +117,27 @@ comment says so:
 return Runnable.batch(self, inputs, config, ...)
 ```
 
-The prompt's requirement is unconditional — *"Batch methods coalesce per-item
-and preserve positional order"* — so the rollout does not reliably meet the
-spec, and grading it 0 is correct. The defect in the test cuts the other way:
-without the barrier, a non-compliant implementation passes about 1 run in 5.
-Adding the barrier its siblings use would make the check deterministic and
-stricter, not more lenient.
+Both readings are defensible, and the prompt asks for both things:
+
+* *"Batch methods coalesce per-item and preserve positional order"* — the
+  reference satisfies this deterministically.
+* *"sharing one backend so in-flight state is visible across methods"* — the
+  reference's `batch()` never touches the backend (`self.bound.batch(...)`
+  bypasses it), so a batch item will not join an `invoke()` already running in
+  another thread. Its `invoke()` does the full `backend.register` / `join`
+  dance; `batch()` skips it. The rollout, by routing every item through its
+  coalescing-aware `invoke`, gets cross-method joining for free — and pays for
+  it with a race on duplicates inside one batch.
+
+No test in the suite mixes `batch` with a concurrent `invoke` or `stream`, so
+the clause the reference misses is never checked, while the clause the rollout
+misses is. The grade follows the tests, which is the right call for a
+benchmark, but the rollout is not simply sloppy — it optimised for the
+untested half of the spec.
+
+The test's own defect cuts the lenient way: without the barrier its nine
+siblings use, an implementation that coalesces only opportunistically still
+passes about 1 run in 5.
 
 The test that moves is benchmark-authored (it comes from the task's own
 `tests/test.patch`, not upstream langchain) and it is on the fail-to-pass
