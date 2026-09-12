@@ -119,7 +119,8 @@ def main() -> None:
         check("report: infrastructure excluded from score", verdict.get("scored") == 2 and verdict.get("solved") == 1, verdict)
         check("report: expectation from reference", 1.5 < (verdict.get("expected") or 0) < 2.0, verdict.get("expected"))
         check("report: retries surfaced", "`ServiceUnavailableError` 9" in summary and "`RateLimitError` 1" in summary)
-        check("report: format errors surfaced", "format errors: **1**" in summary)
+        check("report: format errors surfaced", "| format-error replies | 1 of 5 (20.0%) |" in summary)
+        check("report: reference per-call column filled", "reference (8 published rollouts)" in summary)
         check("report: per-task marks", f"| `{solved_task}` | `P` |" in summary and f"| `{failed_task}` | `X` |" in summary)
         if failures:
             print(summary)

@@ -103,9 +103,13 @@ Building agent config from specs: ['mini.yaml', 'agent.cost_limit=0',
 - **Speed**, glm-5.3 at `reasoning_effort=max`, 2026-09-12: a long-reasoning step
   (4.5k output tokens) took 152 s, ~7.7 s to first token, ~31 tokens/s; short
   steps took 12–18 s at 63k–107k context.
-- A glm-5.3 reply once came back with UTF-8 mis-decoded as Latin-1 (an em dash
-  as `â€”`). Published Z.AI glm-5.3 trajectories contain the same pattern, so
-  it isn't shown to be crof's; the collector counts it per rollout.
+- A glm-5.3 reply came back with UTF-8 mis-decoded as Latin-1 (an em dash as
+  three characters starting with `â`). That is glm-5.3 at Z.AI too: in 30
+  published glm-5.3 trajectories, 29 have it in the model's own output (388
+  sequences, next to 23k correctly encoded characters), and tool output has
+  none. One rollout greps its files for the bad bytes after writing them. So
+  compare the rate per call against the reference, not the raw count; the
+  report does.
 
 ## Replaying recorded actions
 
